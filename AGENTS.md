@@ -1,65 +1,135 @@
-# 项目上下文
+# 果推 - 智能订单推单系统 AGENTS.md
+
+## 项目概览
+
+一套类似方果 ERP 的多用户订单推单系统，支持多平台（Temu/Shein/速卖通等）订单统一管理、智能解码、一键推单到工厂，**按单计费独立余额**。
 
 ### 版本技术栈
-
 - **Framework**: Next.js 16 (App Router)
 - **Core**: React 19
 - **Language**: TypeScript 5
 - **UI 组件**: shadcn/ui (基于 Radix UI)
 - **Styling**: Tailwind CSS 4
+- **数据库**: Supabase (PostgreSQL)
+- **认证**: Supabase Auth (邮箱登录)
 
 ## 目录结构
 
 ```
-├── public/                 # 静态资源
-├── scripts/                # 构建与启动脚本
-│   ├── build.sh            # 构建脚本
-│   ├── dev.sh              # 开发环境启动脚本
-│   ├── prepare.sh          # 预处理脚本
-│   └── start.sh            # 生产环境启动脚本
+├── public/                     # 静态资源
 ├── src/
-│   ├── app/                # 页面路由与布局
-│   ├── components/ui/      # Shadcn UI 组件库
-│   ├── hooks/              # 自定义 Hooks
-│   ├── lib/                # 工具库
-│   │   └── utils.ts        # 通用工具函数 (cn)
-│   └── server.ts           # 自定义服务端入口
-├── next.config.ts          # Next.js 配置
-├── package.json            # 项目依赖管理
-└── tsconfig.json           # TypeScript 配置
+│   ├── app/
+│   │   ├── api/                # 后端 API 路由
+│   │   │   ├── balance/        # 余额查询 GET
+│   │   │   ├── wallet/
+│   │   │   │   ├── recharge/         # 充值 POST
+│   │   │   │   └── transactions/     # 流水列表 GET
+│   │   │   ├── orders/         # 订单相关
+│   │   │   │   ├── route.ts            # 列表 GET / 创建 POST
+│   │   │   │   ├── [id]/
+│   │   │   │   │   ├── decode/route.ts # 单条解码 POST
+│   │   │   │   │   └── push/route.ts   # 单条推单 POST
+│   │   │   │   ├── batch-decode/route.ts # 批量解码 POST
+│   │   │   │   └── batch-push/route.ts   # 批量推单 POST
+│   │   │   ├── demo/seed/       # 生成模拟演示数据 POST
+│   │   │   └── supabase-config/ # Supabase 配置注入
+│   │   ├── login/               # 登录/注册页
+│   │   ├── wallet/              # 钱包页
+│   │   ├── products/            # 商品管理页
+│   │   ├── page.tsx             # 首页（订单管理）
+│   │   └── layout.tsx           # 根布局
+│   ├── components/
+│   │   ├── ui/                  # shadcn/ui 组件库
+│   │   ├── app-layout.tsx       # 应用侧边栏布局
+│   │   └── auth-provider-wrapper.tsx  # AuthProvider 客户端包装
+│   ├── lib/
+│   │   ├── auth-provider.tsx    # 认证上下文（登录态/用户信息）
+│   │   ├── auth-utils.ts        # 服务端认证工具函数
+│   │   ├── api-request.ts       # 前端 API 请求封装（自动带 x-session）
+│   │   ├── supabase-browser.ts  # 浏览器端 Supabase 客户端
+│   │   ├── supabase-config-inject.tsx  # Supabase 配置注入组件
+│   │   └── utils.ts             # 通用工具（cn 等）
+│   └── storage/database/
+│       ├── supabase-client.ts   # 服务端 Supabase 客户端
+│       └── shared/schema.ts     # Drizzle Schema 定义
+├── DESIGN.md                    # 设计规范
+├── package.json
+└── tsconfig.json
 ```
 
-- 项目文件（如 app 目录、pages 目录、components 等）默认初始化到 `src/` 目录下。
+## 核心数据模型（Supabase Tables）
 
-## 包管理规范
+| 表名 | 说明 | 关键字段 |
+|------|------|----------|
+| `user_balances` | 用户余额（RLS隔离） | user_id, balance, frozen_balance, total_recharge, total_consume |
+| `wallet_transactions` | 钱包流水 | user_id, type(recharge/consume/refund), amount, description, order_id |
+| `shops` | 用户店铺 | user_id, platform, shop_name, shop_url, status |
+| `products` | 商品库 | user_id, platform_product_id, product_name, merchant_code, spec |
+| `orders` | 订单表 | user_id, order_no, platform, status, decode_status, merchant_code, price, receiver_*, logistics_* |
 
-**仅允许使用 pnpm** 作为包管理器，**严禁使用 npm 或 yarn**。
-**常用命令**：
-- 安装依赖：`pnpm add <package>`
-- 安装开发依赖：`pnpm add -D <package>`
-- 安装所有依赖：`pnpm install`
-- 移除依赖：`pnpm remove <package>`
+### 订单状态枚举 (status)
+- `pending` - 待整理
+- `decoding` - 解码中  
+- `decoded` - 已解码（待推送）
+- `pushed` - 已推送
+- `production` - 生产中
+- `shipped` - 已发货
+- `refund` - 退款中
+- `closed` - 已关闭
 
-## 开发规范
+### 解码状态 (decode_status)
+- `pending` - 待解码
+- `decoding` - 解码中
+- `success` - 解码成功
+- `fail` - 解码失败
 
-### 编码规范
+### 计费规则（在 push/decode 接口中扣费）
+- 推单扣费：0.50 元/单
+- 解码扣费：0.10 元/单（当前未启用自动扣费，仅推单扣费）
 
-- 默认按 TypeScript `strict` 心智写代码；优先复用当前作用域已声明的变量、函数、类型和导入，禁止引用未声明标识符或拼错变量名。
-- 禁止隐式 `any` 和 `as any`；函数参数、返回值、解构项、事件对象、`catch` 错误在使用前应有明确类型或先完成类型收窄，并清理未使用的变量和导入。
+## 鉴权方式
 
-### next.config 配置规范
+**前后端统一使用 `x-session` header**
 
-- 配置的路径不要写死绝对路径，必须使用 path.resolve(__dirname, ...)、import.meta.dirname 或 process.cwd() 动态拼接。
+- 前端：`api-request.ts` 中自动从 `useAuth()` 获取 session 并注入 header
+- 后端：各 API route 通过 `getCurrentUser(token)` 验证 token
+- RLS：所有业务表启用行级安全，用户只能访问自己的数据
 
-### Hydration 问题防范
+## API 接口清单
 
-1. 严禁在 JSX 渲染逻辑中直接使用 typeof window、Date.now()、Math.random() 等动态数据。**必须使用 'use client' 并配合 useEffect + useState 确保动态内容仅在客户端挂载后渲染**；同时严禁非法 HTML 嵌套（如 <p> 嵌套 <div>）。
-2. **禁止使用 head 标签**，优先使用 metadata，详见文档：https://nextjs.org/docs/app/api-reference/functions/generate-metadata
-   1. 三方 CSS、字体等资源可在 `globals.css` 中顶部通过 `@import` 引入或使用 next/font
-   2. preload, preconnect, dns-prefetch 通过 ReactDOM 的 preload、preconnect、dns-prefetch 方法引入
-   3. json-ld 可阅读 https://nextjs.org/docs/app/guides/json-ld
+| 方法 | 路径 | 功能 | 鉴权 |
+|------|------|------|------|
+| GET | /api/balance | 查询余额 | 是 |
+| GET | /api/wallet/transactions | 钱包流水列表 | 是 |
+| POST | /api/wallet/recharge | 模拟充值 | 是 |
+| GET | /api/orders | 订单列表（支持 status/page/pageSize 过滤） | 是 |
+| POST | /api/orders | 创建订单 | 是 |
+| POST | /api/orders/[id]/decode | 单条订单解码 | 是 |
+| POST | /api/orders/[id]/push | 单条订单推单（扣费） | 是 |
+| POST | /api/orders/batch-decode | 批量解码 | 是 |
+| POST | /api/orders/batch-push | 批量推单（扣费） | 是 |
+| POST | /api/demo/seed | 生成模拟演示数据（赠体验金） | 是 |
+| GET | /api/supabase-config | 获取 Supabase 配置 | 否 |
 
-## UI 设计与组件规范 (UI & Styling Standards)
+## 开发命令
 
-- 模板默认预装核心组件库 `shadcn/ui`，位于`src/components/ui/`目录下
-- Next.js 项目**必须默认**采用 shadcn/ui 组件、风格和规范，**除非用户指定用其他的组件和规范。**
+- `pnpm install` - 安装依赖
+- `pnpm run dev` - 启动开发环境
+- `pnpm run build` - 构建生产版本
+- `pnpm run start` - 启动生产环境
+- `pnpm lint` - 代码检查
+- `pnpm ts-check` - TypeScript 类型检查
+
+## 数据库变更流程
+
+1. 修改 `src/storage/database/shared/schema.ts` 中的 Drizzle schema
+2. 运行 `npx coze-coding-ai db generate-models` 重新生成模型
+3. 运行 `npx coze-coding-ai db upgrade` 执行数据库迁移
+
+## 关键注意事项
+
+1. **Hydration 安全**：所有使用登录态的组件必须配合 `useAuth()` + `isLoading` 判断，避免 SSR 与客户端不一致
+2. **RLS 策略**：所有用户私有数据已启用 RLS，新增表时务必同步配置策略
+3. **计费原子性**：推单扣费使用事务（先扣后写订单状态），失败自动回滚
+4. **x-session 约定**：前后端鉴权 header key 固定为 `x-session`，value 为 supabase access_token
+5. **分页格式**：列表接口统一返回 `{ list, total, page, pageSize, ...extra }` 格式
