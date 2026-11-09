@@ -1,6 +1,6 @@
 import { getSupabaseClient } from '@/storage/database/supabase-client';
 
-export async function getCurrentUser(token: string | null) {
+export async function getCurrentUser(token: string | null | undefined) {
   if (!token) {
     return { user: null, error: '请先登录' };
   }
@@ -31,4 +31,15 @@ export async function ensureUserBalance(userId: string, client: ReturnType<typeo
       .insert({ user_id: userId });
     if (insertError) throw new Error(`创建余额记录失败: ${insertError.message}`);
   }
+}
+
+export async function checkIsAdmin(userId: string, client: ReturnType<typeof getSupabaseClient>) {
+  const { data, error } = await client
+    .from('user_balances')
+    .select('is_admin')
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (error) return false;
+  return data?.is_admin === true;
 }

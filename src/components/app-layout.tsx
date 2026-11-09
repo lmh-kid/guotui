@@ -7,7 +7,6 @@ import { useAuth } from '@/lib/auth-provider';
 import {
   Package,
   ShoppingCart,
-  LayoutDashboard,
   Settings,
   Wallet,
   LogOut,
@@ -16,6 +15,7 @@ import {
   X,
   ChevronDown,
   Loader2,
+  Shield,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -45,6 +45,8 @@ const menuItems = [
   { href: '/wallet', label: '我的钱包', icon: Wallet },
 ];
 
+const adminMenuItem = { href: '/admin', label: '后台管理', icon: Shield };
+
 export default function AppLayout({ children }: AppLayoutProps) {
   const { user, isLoading } = useAuth();
   const pathname = usePathname();
@@ -52,6 +54,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [balance, setBalance] = useState<string>('0.00');
   const [balanceLoading, setBalanceLoading] = useState(true);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
     if (!user) return;
@@ -67,7 +70,17 @@ export default function AppLayout({ children }: AppLayoutProps) {
       }
     };
 
+    const checkAdmin = async () => {
+      try {
+        const data = await apiRequest<{ isAdmin: boolean }>('/api/admin/check');
+        setIsAdmin(data.isAdmin);
+      } catch {
+        // 非管理员不阻塞
+      }
+    };
+
     fetchBalance();
+    checkAdmin();
   }, [user]);
 
   const handleLogout = async () => {
@@ -200,6 +213,23 @@ export default function AppLayout({ children }: AppLayoutProps) {
                 </Link>
               );
             })}
+            {isAdmin && (
+              <Link
+                href={adminMenuItem.href}
+                onClick={() => setSidebarOpen(false)}
+                className={`
+                  flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium
+                  transition-colors
+                  ${pathname === adminMenuItem.href
+                    ? 'bg-purple-50 text-purple-600'
+                    : 'text-purple-600 hover:bg-purple-50'
+                  }
+                `}
+              >
+                <Shield className="w-5 h-5" />
+                {adminMenuItem.label}
+              </Link>
+            )}
           </nav>
         </aside>
 
