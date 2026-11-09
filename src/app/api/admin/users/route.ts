@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser, checkIsAdmin, ensureUserBalance } from '@/lib/auth-utils';
+import { getSupabaseAdminClient } from '@/storage/database/supabase-client';
 
 export async function GET(request: NextRequest) {
   try {
@@ -19,10 +20,7 @@ export async function GET(request: NextRequest) {
     }
 
     // 使用 service role 查询所有用户（绕过 RLS）
-    const supabaseUrl = process.env.COZE_SUPABASE_URL!;
-    const supabaseServiceKey = process.env.COZE_SUPABASE_SERVICE_ROLE_KEY!;
-
-    const adminClient = createAdminClient(supabaseUrl, supabaseServiceKey);
+    const adminClient = getSupabaseAdminClient();
 
     // 获取所有 auth 用户
     const { data: authUsers, error: authError2 } = await adminClient.auth.admin.listUsers();
@@ -89,9 +87,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '初始余额不能为负数' }, { status: 400 });
     }
 
-    const supabaseUrl = process.env.COZE_SUPABASE_URL!;
-    const supabaseServiceKey = process.env.COZE_SUPABASE_SERVICE_ROLE_KEY!;
-    const adminClient = createAdminClient(supabaseUrl, supabaseServiceKey);
+    const adminClient = getSupabaseAdminClient();
 
     // 检查邮箱是否已存在
     const { data: existingUsers } = await adminClient.auth.admin.listUsers();
@@ -145,14 +141,7 @@ export async function POST(request: NextRequest) {
 }
 
 import { getSupabaseClient } from '@/storage/database/supabase-client';
-import { createClient } from '@supabase/supabase-js';
 
 function getCurrentUserClient(token: string) {
   return getSupabaseClient(token);
-}
-
-function createAdminClient(url: string, key: string) {
-  return createClient(url, key, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
 }

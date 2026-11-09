@@ -125,4 +125,34 @@ function getSupabaseClient(token?: string): SupabaseClient {
   });
 }
 
-export { loadEnv, getSupabaseCredentials, getSupabaseServiceRoleKey, getSupabaseClient };
+function getSupabaseAdminClient(): SupabaseClient {
+  const { url } = getSupabaseCredentials();
+  const serviceRoleKey = getSupabaseServiceRoleKey();
+
+  if (!serviceRoleKey) {
+    throw new Error('COZE_SUPABASE_SERVICE_ROLE_KEY is not set');
+  }
+
+  const globalOptions: Record<string, any> = {};
+  try {
+    const buffer = getReportBuffer();
+    if (buffer) {
+      globalOptions.fetch = createWrappedFetch(buffer, 'supabase');
+    }
+  } catch {
+    // Silent
+  }
+
+  return createClient(url, serviceRoleKey, {
+    global: globalOptions,
+    db: {
+      timeout: 60000,
+    },
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+  });
+}
+
+export { loadEnv, getSupabaseCredentials, getSupabaseServiceRoleKey, getSupabaseClient, getSupabaseAdminClient };

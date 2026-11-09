@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser, checkIsAdmin } from '@/lib/auth-utils';
+import { getSupabaseAdminClient } from '@/storage/database/supabase-client';
 
 export async function GET(request: NextRequest) {
   try {
@@ -22,9 +23,7 @@ export async function GET(request: NextRequest) {
     const userId = searchParams.get('userId');
 
     // 使用 service role 查询（绕过 RLS）
-    const supabaseUrl = process.env.COZE_SUPABASE_URL!;
-    const supabaseServiceKey = process.env.COZE_SUPABASE_SERVICE_ROLE_KEY!;
-    const adminClient = createAdminClient(supabaseUrl, supabaseServiceKey);
+    const adminClient = getSupabaseAdminClient();
 
     let query = adminClient
       .from('wallet_transactions')
@@ -64,14 +63,7 @@ export async function GET(request: NextRequest) {
 }
 
 import { getSupabaseClient } from '@/storage/database/supabase-client';
-import { createClient } from '@supabase/supabase-js';
 
 function getCurrentUserClient(token: string) {
   return getSupabaseClient(token);
-}
-
-function createAdminClient(url: string, key: string) {
-  return createClient(url, key, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
 }
