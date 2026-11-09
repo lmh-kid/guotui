@@ -47,6 +47,7 @@ import {
   Shield,
   AlertCircle,
   RefreshCw,
+  UserPlus,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -97,6 +98,13 @@ export default function AdminPage() {
   const [adjustAmount, setAdjustAmount] = useState('');
   const [adjustDesc, setAdjustDesc] = useState('');
   const [adjustLoading, setAdjustLoading] = useState(false);
+
+  // 创建用户
+  const [createDialog, setCreateDialog] = useState(false);
+  const [createEmail, setCreateEmail] = useState('');
+  const [createPassword, setCreatePassword] = useState('');
+  const [createBalance, setCreateBalance] = useState('0');
+  const [createLoading, setCreateLoading] = useState(false);
 
   // 检查管理员权限
   useEffect(() => {
@@ -192,6 +200,40 @@ export default function AdminPage() {
     }
   };
 
+  // 提交创建用户
+  const handleCreateUser = async () => {
+    if (!createEmail.includes('@')) {
+      toast.error('请输入有效的邮箱地址');
+      return;
+    }
+    if (createPassword.length < 6) {
+      toast.error('密码长度至少6位');
+      return;
+    }
+
+    setCreateLoading(true);
+    try {
+      await apiRequest('/api/admin/users', {
+        method: 'POST',
+        body: JSON.stringify({
+          email: createEmail,
+          password: createPassword,
+          initialBalance: parseFloat(createBalance) || 0,
+        }),
+      });
+      toast.success(`用户 ${createEmail} 创建成功`);
+      setCreateDialog(false);
+      setCreateEmail('');
+      setCreatePassword('');
+      setCreateBalance('0');
+      loadUsers();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '创建用户失败');
+    } finally {
+      setCreateLoading(false);
+    }
+  };
+
   // 过滤用户
   const filteredUsers = users.filter(
     (u) =>
@@ -255,6 +297,10 @@ export default function AdminPage() {
               <Button variant="outline" size="sm" onClick={loadUsers} disabled={usersLoading}>
                 <RefreshCw className={`w-4 h-4 mr-2 ${usersLoading ? 'animate-spin' : ''}`} />
                 刷新
+              </Button>
+              <Button size="sm" onClick={() => setCreateDialog(true)}>
+                <UserPlus className="w-4 h-4 mr-2" />
+                创建用户
               </Button>
             </div>
 
@@ -494,6 +540,58 @@ export default function AdminPage() {
               <Button onClick={handleAdjust} disabled={adjustLoading}>
                 {adjustLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
                 确认调整
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* 创建用户弹窗 */}
+        <Dialog open={createDialog} onOpenChange={setCreateDialog}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>创建用户</DialogTitle>
+              <DialogDescription>
+                为新用户创建登录账号，创建后用户可直接登录
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium">邮箱</label>
+                <Input
+                  type="email"
+                  placeholder="用户登录邮箱"
+                  value={createEmail}
+                  onChange={(e) => setCreateEmail(e.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">密码</label>
+                <Input
+                  type="text"
+                  placeholder="登录密码（至少6位）"
+                  value={createPassword}
+                  onChange={(e) => setCreatePassword(e.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">初始余额（元）</label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  placeholder="0.00"
+                  value={createBalance}
+                  onChange={(e) => setCreateBalance(e.target.value)}
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setCreateDialog(false)}>
+                取消
+              </Button>
+              <Button onClick={handleCreateUser} disabled={createLoading}>
+                {createLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                创建用户
               </Button>
             </DialogFooter>
           </DialogContent>

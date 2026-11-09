@@ -31,9 +31,15 @@
 │   │   │   │   │   └── push/route.ts   # 单条推单 POST
 │   │   │   │   ├── batch-decode/route.ts # 批量解码 POST
 │   │   │   │   └── batch-push/route.ts   # 批量推单 POST
+│   │   │   ├── admin/           # 后台管理（需管理员权限）
+│   │   │   │   ├── check/route.ts          # 检查管理员权限 GET
+│   │   │   │   ├── users/route.ts          # 用户列表 GET / 创建用户 POST
+│   │   │   │   ├── adjust-balance/route.ts # 调整用户余额 POST
+│   │   │   │   └── transactions/route.ts   # 全局流水 GET
 │   │   │   ├── demo/seed/       # 生成模拟演示数据 POST
 │   │   │   └── supabase-config/ # Supabase 配置注入
-│   │   ├── login/               # 登录/注册页
+│   │   ├── login/               # 登录页（无注册，账号由管理员创建）
+│   │   ├── admin/               # 后台管理页（用户管理/余额调整/流水）
 │   │   ├── wallet/              # 钱包页
 │   │   ├── products/            # 商品管理页
 │   │   ├── page.tsx             # 首页（订单管理）
@@ -61,7 +67,7 @@
 
 | 表名 | 说明 | 关键字段 |
 |------|------|----------|
-| `user_balances` | 用户余额（RLS隔离） | user_id, balance, frozen_balance, total_recharge, total_consume |
+| `user_balances` | 用户余额（RLS隔离） | user_id, balance, frozen_balance, total_recharge, total_consume, is_admin |
 | `wallet_transactions` | 钱包流水 | user_id, type(recharge/consume/refund), amount, description, order_id |
 | `shops` | 用户店铺 | user_id, platform, shop_name, shop_url, status |
 | `products` | 商品库 | user_id, platform_product_id, product_name, merchant_code, spec |
@@ -109,7 +115,19 @@
 | POST | /api/orders/batch-decode | 批量解码 | 是 |
 | POST | /api/orders/batch-push | 批量推单（扣费） | 是 |
 | POST | /api/demo/seed | 生成模拟演示数据（赠体验金） | 是 |
+| GET | /api/admin/check | 检查是否管理员 | 是 |
+| GET | /api/admin/users | 用户列表（含余额） | 管理员 |
+| POST | /api/admin/users | 创建用户（邮箱/密码/初始余额） | 管理员 |
+| POST | /api/admin/adjust-balance | 调整用户余额（正充负扣） | 管理员 |
+| GET | /api/admin/transactions | 全局流水记录 | 管理员 |
 | GET | /api/supabase-config | 获取 Supabase 配置 | 否 |
+
+## 账号体系
+
+- **无自助注册**：登录页仅支持登录，新用户由管理员在 `/admin` 后台创建
+- **管理员标记**：`user_balances.is_admin = true`（通过 SQL 设置）
+- **创建用户**：管理员在后台填写邮箱/密码/初始余额，`email_confirm=true` 创建后立即可登录
+- **管理员 API**：使用 `COZE_SUPABASE_SERVICE_ROLE_KEY` 绕过 RLS，普通用户接口走 RLS 隔离
 
 ## 开发命令
 

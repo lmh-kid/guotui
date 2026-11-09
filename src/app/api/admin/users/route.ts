@@ -56,6 +56,94 @@ export async function GET(request: NextRequest) {
   }
 }
 
+// 创建用户（管理员）
+export async function POST(request: NextRequest) {
+  try {
+    const token = request.headers.get('x-session');
+    const { user, error: authError } = await getCurrentUser(token ?? undefined);
+
+    if (authError || !user) {
+      return NextResponse.json({ error: authError || '请先登录' }, { status: 401 });
+    }
+
+    const client = getCurrentUserClient(token!);
+    await ensureUserBalance(user.id, client);
+
+    const isAdmin = await checkIsAdmin(user.id, client);
+    if (!isAdmin) {
+      return NextResponse.json({ error: '无权限访问' }, { status: 403 });
+    }
+
+    const body = await request.json();
+    const { email, password, initialBalance } = body;
+
+    if (!email || typeof email !== 'string' || !email.includes('@')) {
+      return NextResponse.json({ error: '请输入有效的邮箱地址' }, { status: 400 });
+    }
+    if (!password || typeof password !== 'string' || password.length < 6) {
+      return NextResponse.json({ error: '密码长度至少6位' }, { status: 400 });
+    }
+
+    const balance = parseFloat(initialBalance) || 0;
+    if (balance < 0) {
+      return NextResponse.json({ error: '初始余额不能为负数' }, { status: 400 });
+    }
+
+    const supabaseUrl = process.env.COZE_SUPABASE_URL!;
+    const supabaseServiceKey = process.env.COZE_SUPABASE_SERVICE_ROLE_KEY!;
+    const adminClient = createAdminClient(supabaseUrl, supabaseServiceKey);
+
+    // 检查邮箱是否已存在
+    const { data: existingUsers } = await adminClient.auth.admin.listUsers();
+    const exists = existingUsers?.users?.some((u) => u.email === email);
+    if (exists) {
+      return NextResponse.json({ error: '该邮箱已被使用' }, { status: 400 });
+    }
+
+    // 创建用户（email_confirm: true 直接可用，无需邮箱验证）
+    const { data: newUser, error: createError } = await adminClient.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,
+    });
+
+    if (createError) {
+      return NextResponse.json({ error: `创建用户失败: ${createError.message}` }, { status: 400 });
+    }
+
+    // 初始化余额账户
+    const { error: balanceError } = await adminClient.from('user_balances').insert({
+      user_id: newUser.user.id,
+      balance: balance.toFixed(2),
+      total_recharge: balance.toFixed(2),
+    });
+
+    if (balanceError) {
+      console.error('[Admin CreateUser] 初始化余额失败:', balanceError);
+    }
+
+    // 如果有初始余额，记录一笔充值流水
+    if (balance > 0) {
+      await adminClient.from('wallet_transactions').insert({
+        user_id: newUser.user.id,
+        type: 'recharge',
+        amount: balance.toFixed(2),
+        balance_after: balance.toFixed(2),
+        description: '管理员开通账号赠送初始余额',
+      });
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: '用户创建成功',
+      user: { id: newUser.user.id, email: newUser.user.email },
+    });
+  } catch (error) {
+    console.error('[Admin CreateUser] 错误:', error);
+    return NextResponse.json({ error: '服务器错误' }, { status: 500 });
+  }
+}
+
 import { getSupabaseClient } from '@/storage/database/supabase-client';
 import { createClient } from '@supabase/supabase-js';
 
