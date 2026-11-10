@@ -119,7 +119,7 @@ export default function OrdersPage() {
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [keyword, setKeyword] = useState('');
-  const [platform, setPlatform] = useState('');
+  const [platform, setPlatform] = useState('all');
   const [showFilters, setShowFilters] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [seedLoading, setSeedLoading] = useState(false);
@@ -133,7 +133,7 @@ export default function OrdersPage() {
         status: activeStatus,
       });
       if (keyword) params.set('keyword', keyword);
-      if (platform) params.set('platform', platform);
+      if (platform && platform !== 'all') params.set('platform', platform);
 
       const data = await apiRequest<OrdersResponse>(`/api/orders?${params.toString()}`);
       setOrders(data.list);
@@ -288,7 +288,7 @@ export default function OrdersPage() {
                   <SelectValue placeholder="选择平台" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">全部平台</SelectItem>
+                  <SelectItem value="all">全部平台</SelectItem>
                   <SelectItem value="temu">Temu</SelectItem>
                   <SelectItem value="shein">Shein</SelectItem>
                   <SelectItem value="aliexpress">速卖通</SelectItem>
