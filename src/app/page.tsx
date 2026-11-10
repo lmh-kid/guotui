@@ -34,8 +34,6 @@ import {
   RefreshCw,
   Play,
   Zap,
-  Download,
-  Upload,
   Filter,
   ChevronDown,
   Clock,
@@ -68,6 +66,9 @@ interface Order {
   delivery_deadline: string;
   tracking_no: string | null;
   logistics_company: string | null;
+  store_name: string | null;
+  factory_id: string | null;
+  df_status: number | null;
 }
 
 interface OrdersResponse {
@@ -107,6 +108,12 @@ const platformNames: Record<string, string> = {
   temu: 'Temu',
   shein: 'Shein',
   aliexpress: '速卖通',
+  tiktok: 'TikTok',
+  alibaba: '1688',
+  wish: 'Wish',
+  lazada: 'Lazada',
+  shopee: 'Shopee',
+  amazon: 'Amazon',
 };
 
 export default function OrdersPage() {
@@ -122,7 +129,6 @@ export default function OrdersPage() {
   const [platform, setPlatform] = useState('all');
   const [showFilters, setShowFilters] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
-  const [seedLoading, setSeedLoading] = useState(false);
 
   const fetchOrders = useCallback(async () => {
     setLoading(true);
@@ -209,6 +215,7 @@ export default function OrdersPage() {
         }
       );
       toast.success(result.message);
+      window.dispatchEvent(new Event('balance-updated'));
       fetchOrders();
       setSelectedIds([]);
     } catch (err: unknown) {
@@ -216,23 +223,6 @@ export default function OrdersPage() {
       toast.error(message);
     } finally {
       setActionLoading(null);
-    }
-  };
-
-  const handleSeedDemo = async () => {
-    setSeedLoading(true);
-    try {
-      const result = await apiRequest<{ success: boolean; message: string }>(
-        '/api/demo/seed',
-        { method: 'POST', body: '{}' }
-      );
-      toast.success(result.message);
-      fetchOrders();
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : '生成失败';
-      toast.error(message);
-    } finally {
-      setSeedLoading(false);
     }
   };
 
@@ -248,23 +238,9 @@ export default function OrdersPage() {
             <p className="text-sm text-gray-500 mt-1">共 {total} 条订单</p>
           </div>
           <div className="flex gap-2">
-            {total === 0 && (
-              <Button variant="outline" onClick={handleSeedDemo} disabled={seedLoading}>
-                {seedLoading ? (
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                ) : (
-                  <Zap className="w-4 h-4 mr-2" />
-                )}
-                生成演示数据
-              </Button>
-            )}
-            <Button variant="outline">
-              <Download className="w-4 h-4 mr-2" />
-              导出订单
-            </Button>
-            <Button>
-              <Upload className="w-4 h-4 mr-2" />
-              导入订单
+            <Button variant="outline" onClick={fetchOrders} disabled={loading}>
+              <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+              同步刷新
             </Button>
           </div>
         </div>
@@ -387,15 +363,10 @@ export default function OrdersPage() {
               <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
                 <Package className="w-8 h-8 text-gray-400" />
               </div>
-              <p className="text-gray-500 mb-4">暂无订单数据</p>
-              <Button onClick={handleSeedDemo} disabled={seedLoading}>
-                {seedLoading ? (
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                ) : (
-                  <Zap className="w-4 h-4 mr-2" />
-                )}
-                生成演示数据
-              </Button>
+              <p className="text-gray-500 mb-2">暂无订单数据</p>
+              <p className="text-xs text-gray-400">
+                订单由系统自动从方果平台同步，请确认店铺已在后台分配给您
+              </p>
             </div>
           ) : (
             <>
@@ -412,6 +383,7 @@ export default function OrdersPage() {
                       </TableHead>
                       <TableHead className="w-10">序号</TableHead>
                       <TableHead>订单信息</TableHead>
+                      <TableHead>店铺 / 工厂</TableHead>
                       <TableHead>订单状态</TableHead>
                       <TableHead>付款时间</TableHead>
                       <TableHead>收件人信息</TableHead>
@@ -472,6 +444,20 @@ export default function OrdersPage() {
                                     </span>
                                   )}
                                 </div>
+                              </div>
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="space-y-1">
+                              <div className="text-sm text-gray-700 truncate max-w-[160px]" title={order.store_name || ''}>
+                                {order.store_name || <span className="text-gray-400">-</span>}
+                              </div>
+                              <div className="text-xs text-gray-400">
+                                {order.factory_id ? (
+                                  <span>工厂 #{order.factory_id}</span>
+                                ) : (
+                                  <span>待定</span>
+                                )}
                               </div>
                             </div>
                           </TableCell>

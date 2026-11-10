@@ -81,6 +81,11 @@ export default function AppLayout({ children }: AppLayoutProps) {
 
     fetchBalance();
     checkAdmin();
+
+    // 余额变化联动刷新（推单扣费等操作后触发）
+    const onBalanceUpdated = () => fetchBalance();
+    window.addEventListener('balance-updated', onBalanceUpdated);
+    return () => window.removeEventListener('balance-updated', onBalanceUpdated);
   }, [user]);
 
   const handleLogout = async () => {

@@ -48,7 +48,18 @@ import {
   AlertCircle,
   RefreshCw,
   UserPlus,
+  Link2,
+  Store,
+  CloudDownload,
+  KeyRound,
 } from 'lucide-react';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { toast } from 'sonner';
 
 interface AdminUser {
@@ -72,6 +83,17 @@ interface Transaction {
   order_id: string | null;
   description: string | null;
   created_at: string;
+}
+
+interface FangguoShopRow {
+  fangguoShopId: string;
+  shopName: string;
+  brandName: string;
+  platform: string;
+  autoSync: boolean;
+  defaultFactory: number | null;
+  assigned: boolean;
+  assignedUserId: string | null;
 }
 
 export default function AdminPage() {
@@ -105,6 +127,14 @@ export default function AdminPage() {
   const [createPassword, setCreatePassword] = useState('');
   const [createBalance, setCreateBalance] = useState('0');
   const [createLoading, setCreateLoading] = useState(false);
+
+  // 平台对接（方果）
+  const [fgConfig, setFgConfig] = useState<{ configured: boolean; apiKeyMasked: string | null } | null>(null);
+  const [fgApiKeyInput, setFgApiKeyInput] = useState('');
+  const [fgKeySaving, setFgKeySaving] = useState(false);
+  const [fgShops, setFgShops] = useState<FangguoShopRow[]>([]);
+  const [fgShopsLoading, setFgShopsLoading] = useState(false);
+  const [fgSyncing, setFgSyncing] = useState(false);
 
   // 检查管理员权限
   useEffect(() => {
@@ -241,6 +271,105 @@ export default function AdminPage() {
       u.id.includes(userSearch)
   );
 
+  // ============ 平台对接（方果）============
+  const loadFangguoConfig = useCallback(async () => {
+    try {
+      const res = await apiRequest<{ configured: boolean; apiKeyMasked: string | null }>(
+        '/api/admin/fangguo/config'
+      );
+      setFgConfig({ configured: !!res.configured, apiKeyMasked: res.apiKeyMasked ?? null });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '加载方果配置失败');
+    }
+  }, []);
+
+  const loadFangguoShops = useCallback(async () => {
+    setFgShopsLoading(true);
+    try {
+      const res = await apiRequest<{ list: FangguoShopRow[] }>('/api/admin/fangguo/shops');
+      setFgShops(res.list || []);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '加载店铺列表失败');
+    } finally {
+      setFgShopsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isAdmin) {
+      loadFangguoConfig();
+      loadFangguoShops();
+    }
+  }, [isAdmin, loadFangguoConfig, loadFangguoShops]);
+
+  const handleSaveApiKey = async () => {
+    if (!fgApiKeyInput.trim()) {
+      toast.error('请输入 API KEY');
+      return;
+    }
+    setFgKeySaving(true);
+    try {
+      const res = await apiRequest<{ message?: string }>('/api/admin/fangguo/config', {
+        method: 'POST',
+        body: JSON.stringify({ apiKey: fgApiKeyInput.trim() }),
+      });
+      toast.success(res.message || 'API KEY 保存成功');
+      setFgApiKeyInput('');
+      await loadFangguoConfig();
+      await loadFangguoShops();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '保存失败');
+    } finally {
+      setFgKeySaving(false);
+    }
+  };
+
+  const handleAssignShop = async (shop: FangguoShopRow, userId: string) => {
+    try {
+      const res = await apiRequest<{ message?: string }>('/api/admin/fangguo/assign', {
+        method: 'POST',
+        body: JSON.stringify({
+          fangguoShopId: shop.fangguoShopId,
+          shopName: shop.shopName,
+          brandName: shop.brandName,
+          platform: shop.platform,
+          userId: userId || null,
+        }),
+      });
+      toast.success(res.message || '操作成功');
+      await loadFangguoShops();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '操作失败');
+    }
+  };
+
+  const handleManualSync = async () => {
+    setFgSyncing(true);
+    try {
+      const res = await apiRequest<{
+        message?: string;
+        stats?: { fetched?: number; inserted?: number; updated?: number; unassigned?: number };
+      }>('/api/admin/fangguo/sync', {
+        method: 'POST',
+        body: JSON.stringify({ days: 1 }),
+      });
+      const r = res.stats || {};
+      toast.success(
+        `同步完成：拉取 ${r.fetched ?? 0} 单，新增 ${r.inserted ?? 0}，更新 ${r.updated ?? 0}，未分配 ${r.unassigned ?? 0}`
+      );
+      // 同步后刷新用户列表（订单数可能变化）——刷新店铺分配状态即可
+      await loadFangguoShops();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '同步失败');
+    } finally {
+      setFgSyncing(false);
+    }
+  };
+
+  const refreshFangguo = async () => {
+    await Promise.all([loadFangguoConfig(), loadFangguoShops()]);
+  };
+
   if (loading) {
     return (
       <AppLayout>
@@ -280,6 +409,7 @@ export default function AdminPage() {
           <TabsList>
             <TabsTrigger value="users">用户管理</TabsTrigger>
             <TabsTrigger value="transactions">流水记录</TabsTrigger>
+            <TabsTrigger value="fangguo">平台对接</TabsTrigger>
           </TabsList>
 
           {/* 用户管理 Tab */}
@@ -498,6 +628,171 @@ export default function AdminPage() {
                       </div>
                     )}
                   </>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* 平台对接 Tab */}
+          <TabsContent value="fangguo" className="space-y-4">
+            {/* API KEY 配置 */}
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <KeyRound className="w-4 h-4 text-blue-600" />
+                  方果平台 API KEY
+                </CardTitle>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={refreshFangguo}
+                  disabled={fgShopsLoading}
+                >
+                  <RefreshCw className={`w-4 h-4 mr-2 ${fgShopsLoading ? 'animate-spin' : ''}`} />
+                  刷新
+                </Button>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <span className="text-sm text-gray-500">当前状态：</span>
+                  {fgConfig?.configured ? (
+                    <Badge className="bg-green-100 text-green-700">已配置</Badge>
+                  ) : (
+                    <Badge className="bg-yellow-100 text-yellow-700">未配置</Badge>
+                  )}
+                  {fgConfig?.apiKeyMasked && (
+                    <code className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded">
+                      {fgConfig.apiKeyMasked}
+                    </code>
+                  )}
+                </div>
+                <div className="flex items-center gap-3 flex-wrap">
+                  <Input
+                    type="password"
+                    placeholder={fgConfig?.configured ? '输入新的 API KEY 以更换' : '输入方果开放平台 API KEY'}
+                    value={fgApiKeyInput}
+                    onChange={(e) => setFgApiKeyInput(e.target.value)}
+                    className="max-w-md"
+                  />
+                  <Button onClick={handleSaveApiKey} disabled={fgKeySaving}>
+                    {fgKeySaving ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <Link2 className="w-4 h-4 mr-2" />
+                    )}
+                    保存并验证
+                  </Button>
+                </div>
+                <p className="text-xs text-gray-400">
+                  保存时会先验证 KEY 有效性（调用方果店铺接口），验证通过后系统每 10 分钟自动同步订单
+                </p>
+              </CardContent>
+            </Card>
+
+            {/* 手动同步 */}
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <CloudDownload className="w-4 h-4 text-blue-600" />
+                  订单同步
+                </CardTitle>
+                <Button onClick={handleManualSync} disabled={fgSyncing || !fgConfig?.configured}>
+                  {fgSyncing ? (
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  ) : (
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                  )}
+                  立即同步（近1天）
+                </Button>
+              </CardHeader>
+              <CardContent>
+                <p className="text-xs text-gray-500">
+                  系统每 10 分钟自动拉取方果新订单并按店铺分配给对应用户；点击按钮可立即同步最近 1 天的订单
+                </p>
+              </CardContent>
+            </Card>
+
+            {/* 店铺分配 */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Store className="w-4 h-4 text-blue-600" />
+                  店铺分配（{fgShops.length} 家店铺）
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {fgShopsLoading ? (
+                  <div className="flex items-center justify-center h-32">
+                    <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+                  </div>
+                ) : fgShops.length === 0 ? (
+                  <p className="text-center text-gray-500 py-8">
+                    {fgConfig?.configured ? '未获取到店铺，请检查 API KEY' : '请先配置 API KEY'}
+                  </p>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>店铺名称</TableHead>
+                        <TableHead>品牌</TableHead>
+                        <TableHead>平台</TableHead>
+                        <TableHead>分配状态</TableHead>
+                        <TableHead className="w-[240px]">分配给用户</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {fgShops.map((s) => {
+                        const assignedUser = users.find((u) => u.id === s.assignedUserId);
+                        return (
+                          <TableRow key={s.fangguoShopId}>
+                            <TableCell className="font-medium">{s.shopName}</TableCell>
+                            <TableCell className="text-gray-500">{s.brandName || '-'}</TableCell>
+                            <TableCell className="uppercase text-gray-500">{s.platform || '-'}</TableCell>
+                            <TableCell>
+                              {s.assigned ? (
+                                <Badge className="bg-green-100 text-green-700">已分配</Badge>
+                              ) : (
+                                <Badge variant="secondary">未分配</Badge>
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              {s.assigned && assignedUser ? (
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm text-gray-700 truncate max-w-[130px]">
+                                    {assignedUser.email}
+                                  </span>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => handleAssignShop(s, '')}
+                                  >
+                                    取消分配
+                                  </Button>
+                                </div>
+                              ) : (
+                                <Select
+                                  onValueChange={(v) => handleAssignShop(s, v)}
+                                >
+                                  <SelectTrigger className="w-full">
+                                    <SelectValue placeholder="选择用户分配" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {users
+                                      .filter((u) => !u.isAdmin)
+                                      .map((u) => (
+                                        <SelectItem key={u.id} value={u.id}>
+                                          {u.email}
+                                        </SelectItem>
+                                      ))}
+                                  </SelectContent>
+                                </Select>
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
                 )}
               </CardContent>
             </Card>

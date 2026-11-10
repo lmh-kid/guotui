@@ -35,28 +35,33 @@
 │   │   │   │   ├── check/route.ts          # 检查管理员权限 GET
 │   │   │   │   ├── users/route.ts          # 用户列表 GET / 创建用户 POST
 │   │   │   │   ├── adjust-balance/route.ts # 调整用户余额 POST
-│   │   │   │   └── transactions/route.ts   # 全局流水 GET
+│   │   │   │   ├── transactions/route.ts   # 全局流水 GET
+│   │   │   │   └── fangguo/                # 方果平台对接（KEY配置/店铺分配/手动同步）
 │   │   │   ├── demo/seed/       # 生成模拟演示数据 POST
 │   │   │   └── supabase-config/ # Supabase 配置注入
 │   │   ├── login/               # 登录页（无注册，账号由管理员创建）
-│   │   ├── admin/               # 后台管理页（用户管理/余额调整/流水）
+│   │   ├── admin/               # 后台管理页（用户管理/流水/平台对接）
 │   │   ├── wallet/              # 钱包页
 │   │   ├── products/            # 商品管理页
 │   │   ├── page.tsx             # 首页（订单管理）
 │   │   └── layout.tsx           # 根布局
 │   ├── components/
 │   │   ├── ui/                  # shadcn/ui 组件库
-│   │   ├── app-layout.tsx       # 应用侧边栏布局
+│   │   ├── app-layout.tsx       # 应用侧边栏布局（余额随 balance-updated 事件刷新）
 │   │   └── auth-provider-wrapper.tsx  # AuthProvider 客户端包装
 │   ├── lib/
 │   │   ├── auth-provider.tsx    # 认证上下文（登录态/用户信息）
 │   │   ├── auth-utils.ts        # 服务端认证工具函数
 │   │   ├── api-request.ts       # 前端 API 请求封装（自动带 x-session）
+│   │   ├── fangguo.ts           # 方果 API 客户端（店铺/订单/推单/状态映射）
+│   │   ├── fangguo-sync.ts      # 方果订单同步服务（游标+店铺分配）
+│   │   ├── billing.ts           # 推单扣费（乐观锁）
 │   │   ├── supabase-browser.ts  # 浏览器端 Supabase 客户端
 │   │   ├── supabase-config-inject.tsx  # Supabase 配置注入组件
 │   │   └── utils.ts             # 通用工具（cn 等）
+│   ├── server.ts                # 自定义启动（next + 方果自动同步调度器）
 │   └── storage/database/
-│       ├── supabase-client.ts   # 服务端 Supabase 客户端
+│       ├── supabase-client.ts   # 服务端 Supabase 客户端（含 getSupabaseAdminClient）
 │       └── shared/schema.ts     # Drizzle Schema 定义
 ├── DESIGN.md                    # 设计规范
 ├── package.json
@@ -69,9 +74,10 @@
 |------|------|----------|
 | `user_balances` | 用户余额（RLS隔离） | user_id, balance, frozen_balance, total_recharge, total_consume, is_admin |
 | `wallet_transactions` | 钱包流水 | user_id, type(recharge/consume/refund), amount, description, order_id |
-| `shops` | 用户店铺 | user_id, platform, shop_name, shop_url, status |
+| `shops` | 用户店铺（方果店铺分配） | user_id, platform, shop_name, fangguo_shop_id, platform_code, brand_name, status |
 | `products` | 商品库 | user_id, platform_product_id, product_name, merchant_code, spec |
-| `orders` | 订单表 | user_id, order_no, platform, status, decode_status, merchant_code, price, receiver_*, logistics_* |
+| `orders` | 订单表（order_no 唯一索引） | user_id, order_no, platform, status, decode_status, merchant_code, price, receiver_*, logistics_*, sys_tid, df_status, store_name, factory_id, last_sync_at, deliver_time |
+| `system_configs` | 系统配置（无RLS，仅service role） | key(fangguo_api_key/fangguo_last_sync_time), value |
 
 ### 订单状态枚举 (status)
 - `pending` - 待整理
@@ -89,9 +95,27 @@
 - `success` - 解码成功
 - `fail` - 解码失败
 
-### 计费规则（在 push/decode 接口中扣费）
-- 推单扣费：0.50 元/单
-- 解码扣费：0.10 元/单（当前未启用自动扣费，仅推单扣费）
+### 计费规则（在 push 接口中扣费）
+- 推单扣费：0.50 元/单（`src/lib/billing.ts` chargeUser，乐观锁扣费）
+- 解码不扣费（方果侧已完成解码，订单 shopMappingSku 即商户编码）
+
+## 方果平台对接（方案B：平台统一账号）
+
+**架构**：运营方统一方果账号（API KEY 存 `system_configs` 表 key=`fangguo_api_key`，仅管理员可配），订单由系统从方果同步并按店铺分配给用户；用户推单时系统代理调方果 API，工厂由方果按订单自动路由（订单自带 factoryId，只读展示）。
+
+**核心模块**：
+- `src/lib/fangguo.ts` - 方果 API 客户端（Bearer 认证，`{code,data,msg}` 协议，code=0 成功）
+- `src/lib/fangguo-sync.ts` - 订单同步服务（tidList 时间窗拉取 → 逐单 detail → 按 storeName 匹配 shops 表分配 → 落库；游标存 `system_configs.fangguo_last_sync_time`）
+- `src/lib/billing.ts` - 扣费模块（PUSH_FEE=0.5，乐观锁 3 次重试）
+- `src/server.ts` - 自动同步调度器（10 分钟间隔，globalThis 防重，KEY 未配置自动跳过）
+
+**方果状态映射**（dfStatus: 0待整理 1待推送 2已反审 3工厂待审 4生产中 5已打包；deliverTime 有值→shipped）：
+- 0/2 → status=pending；1 → decoded；3 → pushed；4/5 → production
+- 推单校验：仅 df_status=1 可推，推送成功后置 df_status=3 并扣费
+
+**平台码**：25=Temu全托管，125/225/325/525=Temu半托管分区 → `temu`；其他按 platformDesc 文本匹配
+
+**同步分配规则**：订单 detail 仅含 storeName（无 shopId），按 shops 表 shop_name 精确匹配；未匹配则计入 unassigned（管理员在后台「平台对接」Tab 分配店铺后下次同步生效）
 
 ## 鉴权方式
 
@@ -120,6 +144,11 @@
 | POST | /api/admin/users | 创建用户（邮箱/密码/初始余额） | 管理员 |
 | POST | /api/admin/adjust-balance | 调整用户余额（正充负扣） | 管理员 |
 | GET | /api/admin/transactions | 全局流水记录 | 管理员 |
+| GET | /api/admin/fangguo/config | 方果 API KEY 配置（脱敏） | 管理员 |
+| POST | /api/admin/fangguo/config | 保存/验证方果 API KEY | 管理员 |
+| GET | /api/admin/fangguo/shops | 方果店铺列表（含分配状态） | 管理员 |
+| POST | /api/admin/fangguo/assign | 店铺分配/取消分配 | 管理员 |
+| POST | /api/admin/fangguo/sync | 手动触发订单同步（days 1-7） | 管理员 |
 | GET | /api/supabase-config | 获取 Supabase 配置 | 否 |
 
 ## 账号体系

@@ -19,6 +19,16 @@ export const healthCheck = pgTable("health_check", {
   updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).defaultNow(),
 });
 
+// 系统配置表（存方果 API KEY 等，仅管理员服务端读写，不开放 RLS）
+export const systemConfigs = pgTable("system_configs", {
+  key: varchar("key", { length: 64 }).primaryKey(),
+  value: text("value"),
+  remark: varchar("remark", { length: 255 }),
+  updated_at: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+});
+
 // 用户余额表
 export const userBalances = pgTable(
   "user_balances",
@@ -84,6 +94,9 @@ export const shops = pgTable(
     platform: varchar("platform", { length: 32 }).notNull(), // temu, shein, aliexpress等
     shop_name: varchar("shop_name", { length: 128 }).notNull(),
     shop_id: varchar("shop_id", { length: 64 }),
+    fangguo_shop_id: varchar("fangguo_shop_id", { length: 64 }), // 方果店铺ID
+    platform_code: integer("platform_code"), // 方果平台枚举编码
+    brand_name: varchar("brand_name", { length: 64 }), // 平台名称（Temu全托管等）
     status: varchar("status", { length: 20 }).notNull().default("active"),
     auth_data: jsonb("auth_data"),
     created_at: timestamp("created_at", { withTimezone: true })
@@ -140,6 +153,11 @@ export const orders = pgTable(
     shop_id: varchar("shop_id", { length: 36 }).references(() => shops.id),
     platform: varchar("platform", { length: 32 }).notNull(),
     order_no: varchar("order_no", { length: 64 }).notNull(),
+    sys_tid: varchar("sys_tid", { length: 64 }), // 方果系统单号
+    df_status: integer("df_status"), // 方果原始状态码 0待整理 1待推送 2已反审 3工厂待审 4生产中 5已打包
+    store_name: varchar("store_name", { length: 128 }), // 店铺名
+    factory_id: varchar("factory_id", { length: 64 }), // 工厂ID
+    last_sync_at: timestamp("last_sync_at", { withTimezone: true }), // 最后同步时间
     order_type: varchar("order_type", { length: 32 }), // Y2订单, 正常订单
     status: varchar("status", { length: 32 }).notNull().default("pending"), // 待整理, 待推送, 已反审, 生产中, 已发货等
     decode_status: varchar("decode_status", { length: 20 }).default("pending"), // 解码状态: pending解码中, success成功, fail失败
@@ -156,6 +174,7 @@ export const orders = pgTable(
     tracking_no: varchar("tracking_no", { length: 64 }), // 运单号
     logistics_company: varchar("logistics_company", { length: 64 }),
     pay_time: timestamp("pay_time", { withTimezone: true }),
+    deliver_time: timestamp("deliver_time", { withTimezone: true }), // 发货时间
     delivery_deadline: timestamp("delivery_deadline", { withTimezone: true }),
     remark: text("remark"),
     order_data: jsonb("order_data"), // 原始订单数据
@@ -173,5 +192,6 @@ export const orders = pgTable(
     index("orders_order_no_idx").on(table.order_no),
     index("orders_created_at_idx").on(table.created_at),
     index("orders_decode_status_idx").on(table.decode_status),
+    index("orders_sys_tid_idx").on(table.sys_tid),
   ]
 );

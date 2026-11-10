@@ -43,3 +43,20 @@ export async function checkIsAdmin(userId: string, client: ReturnType<typeof get
   if (error) return false;
   return data?.is_admin === true;
 }
+
+/**
+ * 管理员鉴权快捷方式：验证 token 并检查管理员身份
+ * 返回 { user } 或 null（调用方直接返回 401/403）
+ */
+export async function requireAdminRequest(token: string | null | undefined) {
+  const { user } = await getCurrentUser(token);
+  if (!user) {
+    return { user: null, isAdmin: false, error: '请先登录' as const };
+  }
+  const client = getSupabaseClient(token as string);
+  const isAdmin = await checkIsAdmin(user.id, client);
+  if (!isAdmin) {
+    return { user, isAdmin: false, error: '无权限访问' as const };
+  }
+  return { user, isAdmin: true, error: null };
+}

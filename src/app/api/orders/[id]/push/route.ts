@@ -1,17 +1,22 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser, ensureUserBalance } from '@/lib/auth-utils';
-import { getSupabaseClient } from '@/storage/database/supabase-client';
+import { NextRequest, NextResponse } from "next/server";
+import { getCurrentUser, ensureUserBalance } from "@/lib/auth-utils";
+import { getSupabaseClient } from "@/storage/database/supabase-client";
+import { pushFangguoOrders, FangguoApiError } from "@/lib/fangguo";
+import { chargeUser, PUSH_FEE } from "@/lib/billing";
 
-// 单条订单推单
+/**
+ * 单条订单推单（真实调方果 API）
+ * 流程: 校验状态 → 调方果 /order/push → 成功后扣费 → 更新状态
+ */
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const token = req.headers.get('x-session');
+  const token = req.headers.get("x-session");
   const { user, error: authError } = await getCurrentUser(token);
 
   if (authError || !user) {
-    return NextResponse.json({ error: authError || '认证失败' }, { status: 401 });
+    return NextResponse.json({ error: authError || "认证失败" }, { status: 401 });
   }
 
   const client = getSupabaseClient(token ?? undefined);
@@ -22,95 +27,95 @@ export async function POST(
 
     // 1. 查询订单
     const { data: order, error: orderError } = await client
-      .from('orders')
-      .select('*')
-      .eq('id', id)
-      .eq('user_id', user.id)
+      .from("orders")
+      .select("id, order_no, sys_tid, status, decode_status, df_status, store_name")
+      .eq("id", id)
+      .eq("user_id", user.id)
       .single();
 
     if (orderError || !order) {
-      return NextResponse.json({ error: '订单不存在' }, { status: 404 });
+      return NextResponse.json({ error: "订单不存在" }, { status: 404 });
     }
 
-    // 2. 检查订单状态
-    if (order.status === 'pushed') {
-      return NextResponse.json({ error: '订单已推送' }, { status: 400 });
+    // 2. 状态检查：已推送/生产中/已发货不可推
+    if (["pushed", "production", "shipped"].includes(order.status)) {
+      return NextResponse.json({ error: "订单已推送，无需重复推送" }, { status: 400 });
+    }
+    // 方果侧状态: 仅 dfStatus=1(待推送) 可推
+    if (order.df_status != null && order.df_status !== 1) {
+      const statusText: Record<number, string> = {
+        0: "待整理",
+        1: "待推送",
+        2: "已反审",
+        3: "工厂待审",
+        4: "生产中",
+        5: "已打包",
+      };
+      return NextResponse.json(
+        { error: `方果侧订单状态为「${statusText[order.df_status] ?? order.df_status}」，仅「待推送」状态可推送` },
+        { status: 400 }
+      );
     }
 
-    if (order.decode_status !== 'success') {
-      return NextResponse.json({ error: '请先完成解码再推送' }, { status: 400 });
-    }
-
-    // 3. 扣费 - 使用 service role 执行事务性操作
+    // 3. 余额预检查（避免推送成功但扣费失败）
     const adminClient = getSupabaseClient();
-    const PUSH_FEE = '0.50'; // 推单费用 0.5元
-
-    // 查询当前余额
-    const { data: balanceData, error: balanceError } = await adminClient
-      .from('user_balances')
-      .select('balance')
-      .eq('user_id', user.id)
+    const { data: balanceData } = await adminClient
+      .from("user_balances")
+      .select("balance")
+      .eq("user_id", user.id)
       .single();
-
-    if (balanceError) throw balanceError;
-
-    if (parseFloat(balanceData.balance as string) < parseFloat(PUSH_FEE)) {
-      return NextResponse.json({ error: '余额不足，请先充值' }, { status: 400 });
+    const balanceNow = parseFloat((balanceData?.balance as string) ?? "0");
+    if (balanceNow < PUSH_FEE) {
+      return NextResponse.json(
+        { error: `余额不足（当前 ${balanceNow.toFixed(2)} 元，推单需 ${PUSH_FEE.toFixed(2)} 元），请先充值` },
+        { status: 400 }
+      );
     }
 
-    // 更新余额
-    const newBalance = (parseFloat(balanceData.balance as string) - parseFloat(PUSH_FEE)).toFixed(2);
-    const { error: updateBalanceError } = await adminClient
-      .from('user_balances')
-      .update({
-        balance: newBalance,
-        total_consume: (parseFloat(balanceData.balance as string) - parseFloat(newBalance) + parseFloat(balanceData.balance as string) ? '0' : '0').toString(), // 简化处理
-        updated_at: new Date().toISOString(),
-      })
-      .eq('user_id', user.id);
+    // 4. 调方果真实推单
+    try {
+      await pushFangguoOrders([order.order_no]);
+    } catch (e) {
+      const msg = e instanceof FangguoApiError ? e.message : "方果推单接口调用失败";
+      return NextResponse.json({ error: `方果推单失败: ${msg}` }, { status: 400 });
+    }
 
-    if (updateBalanceError) throw updateBalanceError;
+    // 5. 推单成功 → 扣费
+    const charge = await chargeUser(
+      user.id,
+      PUSH_FEE,
+      `推单扣费 ${order.order_no}`,
+      order.order_no
+    );
+    if (!charge.success) {
+      // 推单已成功但扣费失败：记录日志（理论上余额检查前置可避免）
+      console.error("[push] charge failed after fangguo push success:", order.order_no, charge.error);
+      return NextResponse.json(
+        { error: `订单已推送至方果，但扣费失败（${charge.error}），请联系管理员核对` },
+        { status: 500 }
+      );
+    }
 
-    // 重新获取余额
-    const { data: updatedBalance } = await adminClient
-      .from('user_balances')
-      .select('balance, total_consume')
-      .eq('user_id', user.id)
-      .single();
-
-    // 写入流水
-    const { error: txError } = await adminClient
-      .from('wallet_transactions')
-      .insert({
-        user_id: user.id,
-        type: 'consume',
-        amount: `-${PUSH_FEE}`,
-        balance_after: updatedBalance?.balance || '0',
-        order_id: order.order_no,
-        description: '订单推单扣费',
-      });
-
-    if (txError) throw txError;
-
-    // 4. 更新订单状态
+    // 6. 更新订单状态
     const { error: updateOrderError } = await client
-      .from('orders')
+      .from("orders")
       .update({
-        status: 'pushed',
+        status: "pushed",
+        df_status: 3, // 工厂待审
         updated_at: new Date().toISOString(),
       })
-      .eq('id', id)
-      .eq('user_id', user.id);
+      .eq("id", id)
+      .eq("user_id", user.id);
 
     if (updateOrderError) throw updateOrderError;
 
     return NextResponse.json({
       success: true,
-      message: '推单成功',
-      balance: newBalance,
+      message: "推单成功，订单已推送至工厂待审核",
+      balance: charge.balance,
     });
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : '推单失败';
+    const message = err instanceof Error ? err.message : "推单失败";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
