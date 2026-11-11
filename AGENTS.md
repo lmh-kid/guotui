@@ -81,8 +81,8 @@
 | `push_records` | 推单计费记录（日结依据） | user_id, order_no, push_date, fee_applied, settled_at；UNIQUE(user_id, order_no) |
 | `shops` | 用户店铺（方果店铺分配） | user_id, platform, shop_name, fangguo_shop_id, platform_code, brand_name, status |
 | `system_configs` | 系统配置（无RLS，仅service role） | key(fangguo_api_key), value |
-| `orders` | **已废弃**（历史遗留，新架构订单不落库） | - |
-| `products` | **已废弃**（商品页已删除） | - |
+
+**已删除表**：`orders`、`products`（历史遗留表，订单实时透传架构下无引用；其对 shops 的外键曾导致店铺取消分配与删除用户失败，已于数据库中 DROP）
 
 ### 订单状态枚举（status，实时计算不落库）
 - `pending` - 待整理（dfStatus 0/2）
@@ -118,7 +118,7 @@
 
 **店铺过滤规则**：detail 仅含 storeName（无 shopId），按 shops 表 shop_name 精确匹配；用户无店铺时返回 noShop=true（前端提示联系管理员分配）
 
-**已移除**：定时同步调度器（fangguo-sync.ts）、订单落库、解码（batch-decode/[id]/decode）、商品管理、模拟数据（demo/seed）
+**已移除**：定时同步调度器（fangguo-sync.ts）、订单落库、解码（batch-decode/[id]/decode）、商品管理、模拟数据（demo/seed）；遗留表 orders/products 已从数据库删除
 
 ## 鉴权方式
 
@@ -173,7 +173,7 @@ order_no（=tid，前端行主键）、sys_tid、platform、platform_desc、orde
 - **管理员标记**：`user_balances.is_admin = true`（通过 SQL 设置）
 - **创建用户**：`email_confirm=true` 创建后立即可登录；账号名校验：字母开头，仅字母/数字/`._-`，2-32 位
 - **展示规则**：`@guotui.local` 域邮箱显示为纯账号名，历史邮箱原样显示
-- **预置账号**：`admin`/`admin@123`（管理员）、`test`/`test123`（普通用户，已分配原 seller001 的 3 个店铺，余额 50）
+- **预置账号**：`admin`/`admin@123`（管理员）、`test`/`test123`（普通用户，已分配 4 个店铺）；另有历史遗留账号 seller001@example.com（无店铺，密码未知）；原管理员 test@example.com 已删除
 - **管理员 API**：使用 `COZE_SUPABASE_SERVICE_ROLE_KEY` 绕过 RLS，普通用户接口走 RLS 隔离
 
 ## 开发命令
