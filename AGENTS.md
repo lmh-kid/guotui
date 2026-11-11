@@ -37,14 +37,14 @@
 │   │   │   │   └── batch-push/route.ts # 批量推单 POST
 │   │   │   ├── admin/           # 后台管理（需管理员权限）
 │   │   │   │   ├── check/route.ts          # 检查管理员权限 GET
-│   │   │   │   ├── users/route.ts          # 用户列表 GET / 创建用户 POST
+│   │   │   │   ├── users/route.ts          # 用户列表 GET / 创建用户 POST / 删除用户 DELETE
 │   │   │   │   ├── adjust-balance/route.ts # 调整用户余额 POST（入参 userId）
 │   │   │   │   ├── transactions/route.ts   # 全局流水 GET
 │   │   │   │   ├── push-records/route.ts   # 推单日账单聚合 GET（用户×日期）
 │   │   │   │   └── fangguo/                # 方果平台对接（KEY配置/店铺分配）
 │   │   │   └── supabase-config/ # Supabase 配置注入
 │   │   ├── login/               # 登录页（无注册，账号由管理员创建）
-│   │   ├── admin/               # 后台管理页（用户管理/流水/推单记录/平台对接）
+│   │   ├── admin/               # 后台管理页（用户管理：创建/删除/调余额/调整店铺分配；流水/推单记录/平台对接）
 │   │   ├── wallet/              # 钱包页
 │   │   ├── page.tsx             # 首页（订单管理：实时透传+计费状态栏）
 │   │   └── layout.tsx           # 根布局
@@ -140,7 +140,8 @@
 | POST | /api/orders/batch-push | 批量推单（body: {order_nos: string[]}） | 是 |
 | GET | /api/admin/check | 检查是否管理员 | 是 |
 | GET | /api/admin/users | 用户列表（含余额） | 管理员 |
-| POST | /api/admin/users | 创建用户（邮箱/密码/初始余额） | 管理员 |
+| POST | /api/admin/users | 创建用户（账号/密码/初始余额） | 管理员 |
+| DELETE | /api/admin/users | 删除用户（body: {userId}；防护自身与管理员；级联清理 shops/wallet_transactions/push_records/user_balances + auth 账号，任一清理失败即中止返回500） | 管理员 |
 | POST | /api/admin/adjust-balance | 调整用户余额（body: {userId, amount, description}，正充负扣） | 管理员 |
 | GET | /api/admin/transactions | 全局流水记录 | 管理员 |
 | GET | /api/admin/push-records | 推单日账单（days 1-31，用户×日期聚合+汇总） | 管理员 |

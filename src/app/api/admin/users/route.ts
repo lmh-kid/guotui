@@ -156,3 +156,77 @@ import { getSupabaseClient } from '@/storage/database/supabase-client';
 function getCurrentUserClient(token: string) {
   return getSupabaseClient(token);
 }
+
+// 删除用户（管理员）
+export async function DELETE(request: NextRequest) {
+  try {
+    const token = request.headers.get('x-session');
+    const { user, error: authError } = await getCurrentUser(token ?? undefined);
+
+    if (authError || !user) {
+      return NextResponse.json({ error: authError || '请先登录' }, { status: 401 });
+    }
+
+    const client = getCurrentUserClient(token!);
+    const isAdmin = await checkIsAdmin(user.id, client);
+    if (!isAdmin) {
+      return NextResponse.json({ error: '无权限访问' }, { status: 403 });
+    }
+
+    const body = await request.json();
+    const { userId } = body as { userId?: string };
+
+    if (!userId || typeof userId !== 'string') {
+      return NextResponse.json({ error: '参数错误' }, { status: 400 });
+    }
+
+    if (userId === user.id) {
+      return NextResponse.json({ error: '不能删除当前登录账号' }, { status: 400 });
+    }
+
+    const adminClient = getSupabaseAdminClient();
+
+    // 校验目标用户存在且非管理员
+    const { data: target } = await adminClient
+      .from('user_balances')
+      .select('user_id, is_admin')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (!target) {
+      return NextResponse.json({ error: '用户不存在' }, { status: 404 });
+    }
+    if (target.is_admin) {
+      return NextResponse.json({ error: '不能删除管理员账号' }, { status: 400 });
+    }
+
+    // 清理关联数据：店铺分配、钱包流水、推单计费记录、余额（任一失败则中止，避免产生孤儿数据）
+    const cleanupTables: Array<{ table: string; label: string }> = [
+      { table: 'shops', label: '店铺分配' },
+      { table: 'wallet_transactions', label: '钱包流水' },
+      { table: 'push_records', label: '推单记录' },
+      { table: 'user_balances', label: '余额账户' },
+    ];
+    for (const { table, label } of cleanupTables) {
+      const { error: cleanError } = await adminClient.from(table).delete().eq('user_id', userId);
+      if (cleanError) {
+        console.error(`[Admin DeleteUser] 清理${label}失败:`, cleanError);
+        return NextResponse.json(
+          { error: `清理${label}失败: ${cleanError.message}` },
+          { status: 500 }
+        );
+      }
+    }
+
+    // 删除认证账号
+    const { error: deleteError } = await adminClient.auth.admin.deleteUser(userId);
+    if (deleteError) {
+      console.error('[Admin DeleteUser] 删除认证账号失败:', deleteError);
+      return NextResponse.json({ error: `删除账号失败: ${deleteError.message}` }, { status: 500 });
+    }
+
+    return NextResponse.json({ success: true, message: '用户已删除' });
+  } catch (error) {
+    console.error('[Admin DeleteUser] 错误:', error);
+    return NextResponse.json({ error: '服务器错误' }, { status: 500 });
+  }
+}

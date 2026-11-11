@@ -52,6 +52,7 @@ import {
   CalendarDays,
   Send,
   KeyRound,
+  Trash2,
 } from 'lucide-react';
 import {
   Select,
@@ -90,6 +91,7 @@ interface FangguoShopRow {
   shopName: string;
   brandName: string;
   platform: string;
+  platformCode: number | null;
   autoSync: boolean;
   defaultFactory: number | null;
   assigned: boolean;
@@ -144,6 +146,18 @@ export default function AdminPage() {
   const [createPassword, setCreatePassword] = useState('');
   const [createBalance, setCreateBalance] = useState('0');
   const [createLoading, setCreateLoading] = useState(false);
+
+  // 删除用户
+  const [deleteDialog, setDeleteDialog] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<AdminUser | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+
+  // 调整用户店铺
+  const [shopDialog, setShopDialog] = useState(false);
+  const [shopTargetUser, setShopTargetUser] = useState<AdminUser | null>(null);
+  const [shopDialogLoading, setShopDialogLoading] = useState(false);
+  const [shopDialogSaving, setShopDialogSaving] = useState(false);
+  const [shopSelection, setShopSelection] = useState<Record<string, boolean>>({});
 
   // 平台对接（方果）
   const [fgConfig, setFgConfig] = useState<{ configured: boolean; apiKeyMasked: string | null } | null>(null);
@@ -221,6 +235,85 @@ export default function AdminPage() {
     setAdjustAmount('');
     setAdjustDesc('');
     setAdjustDialog(true);
+  };
+
+  // 打开调整店铺弹窗（实时拉取店铺列表与分配状态）
+  const openShopDialog = async (u: AdminUser) => {
+    setShopTargetUser(u);
+    setShopDialog(true);
+    setShopDialogLoading(true);
+    try {
+      const res = await apiRequest<{ list: FangguoShopRow[] }>('/api/admin/fangguo/shops');
+      const list = res.list || [];
+      setFgShops(list);
+      const selection: Record<string, boolean> = {};
+      for (const s of list) {
+        selection[s.fangguoShopId] = !!s.assignedUserId && s.assignedUserId === u.id;
+      }
+      setShopSelection(selection);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '加载店铺列表失败');
+      setShopDialog(false);
+    } finally {
+      setShopDialogLoading(false);
+    }
+  };
+
+  // 保存店铺调整（仅提交有变化的店铺）
+  const handleSaveShops = async () => {
+    if (!shopTargetUser) return;
+    setShopDialogSaving(true);
+    try {
+      const tasks: Promise<unknown>[] = [];
+      for (const s of fgShops) {
+        const wasMine = !!s.assignedUserId && s.assignedUserId === shopTargetUser.id;
+        const shouldBeMine = !!shopSelection[s.fangguoShopId];
+        if (wasMine === shouldBeMine) continue;
+        tasks.push(
+          apiRequest('/api/admin/fangguo/assign', {
+            method: 'POST',
+            body: JSON.stringify({
+              fangguoShopId: s.fangguoShopId,
+              shopName: s.shopName,
+              brandName: s.brandName,
+              platform: s.platform,
+              platformCode: s.platformCode,
+              userId: shouldBeMine ? shopTargetUser.id : null,
+            }),
+          })
+        );
+      }
+      await Promise.all(tasks);
+      toast.success(`已更新 ${displayAccountName(shopTargetUser.email)} 的店铺分配`);
+      setShopDialog(false);
+      setShopTargetUser(null);
+      loadFangguoShops();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '保存失败');
+    } finally {
+      setShopDialogSaving(false);
+    }
+  };
+
+  // 删除用户
+  const handleDeleteUser = async () => {
+    if (!deleteTarget) return;
+    setDeleteLoading(true);
+    try {
+      await apiRequest('/api/admin/users', {
+        method: 'DELETE',
+        body: JSON.stringify({ userId: deleteTarget.id }),
+      });
+      toast.success(`用户 ${displayAccountName(deleteTarget.email)} 已删除`);
+      setDeleteDialog(false);
+      setDeleteTarget(null);
+      loadUsers();
+      loadFangguoShops();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '删除失败');
+    } finally {
+      setDeleteLoading(false);
+    }
   };
 
   // 提交余额调整
@@ -504,13 +597,36 @@ export default function AdminPage() {
                             )}
                           </TableCell>
                           <TableCell className="text-center">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => openAdjust(u)}
-                            >
-                              调整余额
-                            </Button>
+                            <div className="flex items-center justify-center gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => openAdjust(u)}
+                              >
+                                调整余额
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => openShopDialog(u)}
+                              >
+                                <Store className="w-4 h-4 mr-1" />
+                                店铺
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200"
+                                disabled={u.isAdmin}
+                                title={u.isAdmin ? '不能删除管理员账号' : '删除用户'}
+                                onClick={() => {
+                                  setDeleteTarget(u);
+                                  setDeleteDialog(true);
+                                }}
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            </div>
                           </TableCell>
                         </TableRow>
                       ))}
@@ -976,6 +1092,112 @@ export default function AdminPage() {
               <Button onClick={handleCreateUser} disabled={createLoading}>
                 {createLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
                 创建用户
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* 调整用户店铺弹窗 */}
+        <Dialog
+          open={shopDialog}
+          onOpenChange={(open) => {
+            setShopDialog(open);
+            if (!open) setShopTargetUser(null);
+          }}
+        >
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>调整店铺分配</DialogTitle>
+              <DialogDescription>
+                为用户{' '}
+                <span className="font-semibold text-gray-900">
+                  {shopTargetUser ? displayAccountName(shopTargetUser.email) : ''}
+                </span>{' '}
+                分配方果店铺，勾选后保存。已分配给其他用户的店铺勾选后将转移给该用户。
+              </DialogDescription>
+            </DialogHeader>
+            <div className="max-h-[50vh] overflow-y-auto space-y-2 py-2">
+              {shopDialogLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+                </div>
+              ) : fgShops.length === 0 ? (
+                <p className="text-center text-gray-500 py-6">暂无可分配店铺</p>
+              ) : (
+                fgShops.map((s) => {
+                  const assignedToOther =
+                    !!s.assignedUserId && !!shopTargetUser && s.assignedUserId !== shopTargetUser.id;
+                  const otherUser = users.find((u) => u.id === s.assignedUserId);
+                  return (
+                    <label
+                      key={s.fangguoShopId}
+                      className="flex items-center justify-between p-3 border border-gray-200 rounded-lg hover:bg-gray-50 cursor-pointer"
+                    >
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="checkbox"
+                          className="w-4 h-4 accent-blue-600 cursor-pointer"
+                          checked={!!shopSelection[s.fangguoShopId]}
+                          onChange={(e) =>
+                            setShopSelection((prev) => ({
+                              ...prev,
+                              [s.fangguoShopId]: e.target.checked,
+                            }))
+                          }
+                        />
+                        <div>
+                          <div className="text-sm font-medium text-gray-900">{s.shopName}</div>
+                          <div className="text-xs text-gray-500">{s.brandName || s.platform}</div>
+                        </div>
+                      </div>
+                      {assignedToOther && (
+                        <span className="text-xs text-amber-600 shrink-0 ml-3">
+                          已分配给 {otherUser ? displayAccountName(otherUser.email) : '其他用户'}
+                        </span>
+                      )}
+                    </label>
+                  );
+                })
+              )}
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setShopDialog(false)}>
+                取消
+              </Button>
+              <Button onClick={handleSaveShops} disabled={shopDialogSaving || shopDialogLoading}>
+                {shopDialogSaving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                保存
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* 删除用户确认弹窗 */}
+        <Dialog open={deleteDialog} onOpenChange={setDeleteDialog}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>删除用户</DialogTitle>
+              <DialogDescription>
+                确定要删除用户{' '}
+                <span className="font-semibold text-gray-900">
+                  {deleteTarget ? displayAccountName(deleteTarget.email) : ''}
+                </span>{' '}
+                吗？该操作不可恢复，将同时删除：
+              </DialogDescription>
+            </DialogHeader>
+            <ul className="text-sm text-gray-600 space-y-1 py-2 list-disc list-inside">
+              <li>登录账号与密码</li>
+              <li>余额与钱包流水记录（当前余额 ¥{deleteTarget?.balance ?? '0.00'}）</li>
+              <li>推单计费记录</li>
+              <li>店铺分配关系</li>
+            </ul>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDeleteDialog(false)}>
+                取消
+              </Button>
+              <Button variant="destructive" onClick={handleDeleteUser} disabled={deleteLoading}>
+                {deleteLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                确认删除
               </Button>
             </DialogFooter>
           </DialogContent>
