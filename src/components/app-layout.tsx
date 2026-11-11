@@ -28,6 +28,7 @@ import {
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { apiRequest } from '@/lib/api-request';
 import { getSupabaseBrowserClientWithRetry } from '@/lib/supabase-browser';
+import { displayAccountName } from '@/lib/account';
 
 interface AppLayoutProps {
   children: ReactNode;
@@ -153,14 +154,14 @@ export default function AppLayout({ children }: AppLayoutProps) {
                     </AvatarFallback>
                   </Avatar>
                   <span className="hidden sm:inline text-sm">
-                    {user.email?.split('@')[0]}
+                    {displayAccountName(user.email)}
                   </span>
                   <ChevronDown className="w-4 h-4" />
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
                 <DropdownMenuLabel>
-                  <div className="font-normal">{user.email}</div>
+                  <div className="font-normal">账号：{displayAccountName(user.email)}</div>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={() => router.push('/wallet')}>

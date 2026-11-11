@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Package2, Eye, EyeOff } from 'lucide-react';
+import { accountToEmail } from '@/lib/account';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -17,7 +18,7 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
 
-  const [email, setEmail] = useState('');
+  const [account, setAccount] = useState('');
   const [password, setPassword] = useState('');
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -28,7 +29,7 @@ export default function LoginPage() {
     try {
       const supabase = await getSupabaseBrowserClientWithRetry();
       const { data, error } = await supabase.auth.signInWithPassword({
-        email,
+        email: accountToEmail(account),
         password,
       });
 
@@ -41,7 +42,7 @@ export default function LoginPage() {
       const msg = err instanceof Error ? err.message : '登录失败';
       setMessage({
         type: 'error',
-        text: msg.includes('Invalid') || msg.includes('凭证') ? '邮箱或密码错误' : msg,
+        text: msg.includes('Invalid') || msg.includes('凭证') ? '账号或密码错误' : msg,
       });
     } finally {
       setLoading(false);
@@ -90,13 +91,14 @@ export default function LoginPage() {
           <CardContent>
             <form onSubmit={handleLogin} className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="email">邮箱</Label>
+                <Label htmlFor="account">账号</Label>
                 <Input
-                  id="email"
-                  type="email"
-                  placeholder="请输入邮箱"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  id="account"
+                  type="text"
+                  autoComplete="username"
+                  placeholder="请输入账号"
+                  value={account}
+                  onChange={(e) => setAccount(e.target.value)}
                   required
                 />
               </div>

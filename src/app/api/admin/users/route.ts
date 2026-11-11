@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser, checkIsAdmin, ensureUserBalance } from '@/lib/auth-utils';
 import { getSupabaseAdminClient } from '@/storage/database/supabase-client';
+import { accountToEmail, isValidAccountName } from '@/lib/account';
 
 export async function GET(request: NextRequest) {
   try {
@@ -73,14 +74,24 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { email, password, initialBalance } = body;
+    const { account, email, password, initialBalance } = body;
 
-    if (!email || typeof email !== 'string' || !email.includes('@')) {
-      return NextResponse.json({ error: '请输入有效的邮箱地址' }, { status: 400 });
+    // 账号制：输入账号名（如 seller01）或完整邮箱（兼容历史格式）
+    const rawName = String(account || email || '').trim();
+    if (!rawName) {
+      return NextResponse.json({ error: '请输入账号' }, { status: 400 });
+    }
+    if (!rawName.includes('@') && !isValidAccountName(rawName)) {
+      return NextResponse.json(
+        { error: '账号格式不正确：字母开头，仅支持字母/数字/._-，2-32位' },
+        { status: 400 }
+      );
     }
     if (!password || typeof password !== 'string' || password.length < 6) {
       return NextResponse.json({ error: '密码长度至少6位' }, { status: 400 });
     }
+
+    const loginEmail = accountToEmail(rawName);
 
     const balance = parseFloat(initialBalance) || 0;
     if (balance < 0) {
@@ -89,16 +100,16 @@ export async function POST(request: NextRequest) {
 
     const adminClient = getSupabaseAdminClient();
 
-    // 检查邮箱是否已存在
+    // 检查账号是否已存在
     const { data: existingUsers } = await adminClient.auth.admin.listUsers();
-    const exists = existingUsers?.users?.some((u) => u.email === email);
+    const exists = existingUsers?.users?.some((u) => u.email?.toLowerCase() === loginEmail.toLowerCase());
     if (exists) {
-      return NextResponse.json({ error: '该邮箱已被使用' }, { status: 400 });
+      return NextResponse.json({ error: '该账号已被使用' }, { status: 400 });
     }
 
     // 创建用户（email_confirm: true 直接可用，无需邮箱验证）
     const { data: newUser, error: createError } = await adminClient.auth.admin.createUser({
-      email,
+      email: loginEmail,
       password,
       email_confirm: true,
     });

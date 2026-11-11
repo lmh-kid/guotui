@@ -164,11 +164,15 @@
 ### LiveOrder 关键字段
 order_no（=tid，前端行主键）、sys_tid、platform、platform_desc、order_type_desc、status、decode_status、df_status、product_name、product_image、spec、merchant_code、quantity、price、pay_time、deliver_time、tracking_no、logistics_company、store_name、factory_id、buyer_remark、shop_remark（**无收件人字段**：方果 detail 接口不返回 receiver，Temu 全托管不提供）
 
-## 账号体系
+## 账号体系（账号名登录，非邮箱）
 
-- **无自助注册**：登录页仅支持登录，新用户由管理员在 `/admin` 后台创建
+- **账号映射**：用户使用账号名（如 `admin`、`test`）登录，底层 Supabase Auth 走邮箱协议，内部映射为 `账号名@guotui.local`（`src/lib/account.ts`：accountToEmail / displayAccountName / isValidAccountName）
+- **登录页**：仅账号+密码输入框；输入含 `@` 时按完整邮箱处理（历史邮箱账号兼容）
+- **无自助注册**：新用户由管理员在 `/admin` 后台创建（填账号名，后端自动映射内部邮箱）
 - **管理员标记**：`user_balances.is_admin = true`（通过 SQL 设置）
-- **创建用户**：管理员在后台填写邮箱/密码/初始余额，`email_confirm=true` 创建后立即可登录
+- **创建用户**：`email_confirm=true` 创建后立即可登录；账号名校验：字母开头，仅字母/数字/`._-`，2-32 位
+- **展示规则**：`@guotui.local` 域邮箱显示为纯账号名，历史邮箱原样显示
+- **预置账号**：`admin`/`admin@123`（管理员）、`test`/`test123`（普通用户，已分配原 seller001 的 3 个店铺，余额 50）
 - **管理员 API**：使用 `COZE_SUPABASE_SERVICE_ROLE_KEY` 绕过 RLS，普通用户接口走 RLS 隔离
 
 ## 开发命令
@@ -194,4 +198,4 @@ order_no（=tid，前端行主键）、sys_tid、platform、platform_desc、orde
 4. **x-session 约定**：前后端鉴权 header key 固定为 `x-session`，value 为 supabase access_token
 5. **分页格式**：列表接口统一返回 `{ list, total, page, pageSize, ...extra }` 格式
 6. **订单无持久化**：任何订单相关逻辑（状态/筛选/统计）均基于方果 API 实时数据 + 内存计算，重启即失效（缓存仅 60 秒）
-7. **测试副作用**：seller001@example.com 为演示账号，验证过程中产生过小额充值/调账流水属正常测试数据
+7. **测试副作用**：验证过程中产生过小额充值/调账流水属正常测试数据（seller001@example.com 为历史演示账号，店铺已转给 test，密码未知）

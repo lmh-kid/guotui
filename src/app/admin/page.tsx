@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import AppLayout from '@/components/app-layout';
 import { apiRequest } from '@/lib/api-request';
+import { displayAccountName, isValidAccountName } from '@/lib/account';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -139,7 +140,7 @@ export default function AdminPage() {
 
   // 创建用户
   const [createDialog, setCreateDialog] = useState(false);
-  const [createEmail, setCreateEmail] = useState('');
+  const [createAccount, setCreateAccount] = useState('');
   const [createPassword, setCreatePassword] = useState('');
   const [createBalance, setCreateBalance] = useState('0');
   const [createLoading, setCreateLoading] = useState(false);
@@ -216,7 +217,7 @@ export default function AdminPage() {
   // 打开余额调整弹窗
   const openAdjust = (user: AdminUser) => {
     setAdjustUserId(user.id);
-    setAdjustUserEmail(user.email);
+    setAdjustUserEmail(displayAccountName(user.email));
     setAdjustAmount('');
     setAdjustDesc('');
     setAdjustDialog(true);
@@ -253,8 +254,8 @@ export default function AdminPage() {
 
   // 提交创建用户
   const handleCreateUser = async () => {
-    if (!createEmail.includes('@')) {
-      toast.error('请输入有效的邮箱地址');
+    if (!isValidAccountName(createAccount)) {
+      toast.error('账号格式不正确：字母开头，仅支持字母/数字/._-，2-32位');
       return;
     }
     if (createPassword.length < 6) {
@@ -267,14 +268,14 @@ export default function AdminPage() {
       await apiRequest('/api/admin/users', {
         method: 'POST',
         body: JSON.stringify({
-          email: createEmail,
+          account: createAccount,
           password: createPassword,
           initialBalance: parseFloat(createBalance) || 0,
         }),
       });
-      toast.success(`用户 ${createEmail} 创建成功`);
+      toast.success(`用户 ${createAccount} 创建成功`);
       setCreateDialog(false);
-      setCreateEmail('');
+      setCreateAccount('');
       setCreatePassword('');
       setCreateBalance('0');
       loadUsers();
@@ -285,10 +286,11 @@ export default function AdminPage() {
     }
   };
 
-  // 过滤用户
+  // 过滤用户（支持按账号名或完整邮箱搜索）
   const filteredUsers = users.filter(
     (u) =>
       u.email.toLowerCase().includes(userSearch.toLowerCase()) ||
+      displayAccountName(u.email).toLowerCase().includes(userSearch.toLowerCase()) ||
       u.id.includes(userSearch)
   );
 
@@ -481,7 +483,7 @@ export default function AdminPage() {
                     <TableBody>
                       {filteredUsers.map((u) => (
                         <TableRow key={u.id}>
-                          <TableCell className="font-medium">{u.email}</TableCell>
+                          <TableCell className="font-medium">{displayAccountName(u.email)}</TableCell>
                           <TableCell className="text-gray-500 text-sm">
                             {new Date(u.createdAt).toLocaleDateString('zh-CN')}
                           </TableCell>
@@ -592,7 +594,7 @@ export default function AdminPage() {
                       <TableBody>
                         {transactions.map((t) => (
                           <TableRow key={t.id}>
-                            <TableCell className="text-sm">{t.email}</TableCell>
+                            <TableCell className="text-sm">{displayAccountName(t.email)}</TableCell>
                             <TableCell>
                               {t.type === 'recharge' ? (
                                 <Badge className="bg-green-100 text-green-700">
@@ -722,7 +724,7 @@ export default function AdminPage() {
                       {pushRecords.map((r) => (
                         <TableRow key={`${r.user_id}-${r.push_date}`}>
                           <TableCell className="text-gray-700">{r.push_date}</TableCell>
-                          <TableCell className="font-medium">{r.email}</TableCell>
+                          <TableCell className="font-medium">{displayAccountName(r.email)}</TableCell>
                           <TableCell className="text-right">{r.total_count} 单</TableCell>
                           <TableCell className="text-right font-semibold">¥{r.amount.toFixed(2)}</TableCell>
                           <TableCell>
@@ -846,7 +848,7 @@ export default function AdminPage() {
                               {s.assigned && assignedUser ? (
                                 <div className="flex items-center gap-2">
                                   <span className="text-sm text-gray-700 truncate max-w-[130px]">
-                                    {assignedUser.email}
+                                    {displayAccountName(assignedUser.email)}
                                   </span>
                                   <Button
                                     size="sm"
@@ -868,7 +870,7 @@ export default function AdminPage() {
                                       .filter((u) => !u.isAdmin)
                                       .map((u) => (
                                         <SelectItem key={u.id} value={u.id}>
-                                          {u.email}
+                                          {displayAccountName(u.email)}
                                         </SelectItem>
                                       ))}
                                   </SelectContent>
@@ -938,12 +940,12 @@ export default function AdminPage() {
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium">邮箱</label>
+                <label className="text-sm font-medium">账号</label>
                 <Input
-                  type="email"
-                  placeholder="用户登录邮箱"
-                  value={createEmail}
-                  onChange={(e) => setCreateEmail(e.target.value)}
+                  type="text"
+                  placeholder="用户登录账号（字母开头，如 seller01）"
+                  value={createAccount}
+                  onChange={(e) => setCreateAccount(e.target.value)}
                 />
               </div>
               <div className="space-y-2">
