@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser, ensureUserBalance } from '@/lib/auth-utils';
-import { getSupabaseClient } from '@/storage/database/supabase-client';
+import { getSupabaseAdminClient } from '@/storage/database/supabase-client';
 
 // 模拟充值（实际应接入支付网关）
 export async function POST(req: NextRequest) {
@@ -20,10 +20,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: '充值金额无效' }, { status: 400 });
     }
 
-    const adminClient = getSupabaseClient();
-    const client = getSupabaseClient(token ?? undefined);
+    const adminClient = getSupabaseAdminClient();
 
-    await ensureUserBalance(user.id, client);
+    await ensureUserBalance(user.id);
 
     // 查询当前余额
     const { data: balanceData, error: balanceError } = await adminClient

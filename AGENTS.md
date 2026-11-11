@@ -17,7 +17,7 @@
 - **UI 组件**: shadcn/ui (基于 Radix UI)
 - **Styling**: Tailwind CSS 4
 - **数据库**: Supabase (PostgreSQL)
-- **认证**: Supabase Auth (邮箱登录)
+- **认证**: 自建账号密码（auth_accounts/auth_sessions + scrypt，Supabase Auth 已废弃）
 
 ## 目录结构
 
@@ -35,6 +35,10 @@
 │   │   │   │   ├── [id]/
 │   │   │   │   │   └── push/route.ts   # 单条推单 POST（id=方果tid）
 │   │   │   │   └── batch-push/route.ts # 批量推单 POST
+│   │   │   ├── auth/             # 自建认证
+│   │   │   │   ├── login/route.ts    # 登录 POST（account/password → token）
+│   │   │   │   ├── logout/route.ts   # 登出 POST
+│   │   │   │   └── me/route.ts       # 当前用户 GET
 │   │   │   ├── admin/           # 后台管理（需管理员权限）
 │   │   │   │   ├── check/route.ts          # 检查管理员权限 GET
 │   │   │   │   ├── users/route.ts          # 用户列表 GET / 创建用户 POST / 删除用户 DELETE
@@ -54,13 +58,15 @@
 │   │   └── auth-provider-wrapper.tsx  # AuthProvider 客户端包装
 │   ├── lib/
 │   │   ├── auth-provider.tsx    # 认证上下文（登录态/用户信息）
-│   │   ├── auth-utils.ts        # 服务端认证工具函数
+│   │   ├── auth-utils.ts        # 服务端认证工具（getCurrentUser 查 auth_sessions）
+│   │   ├── password.ts          # scrypt 密码哈希/校验
+│   │   ├── account.ts           # 账号名校验/清洗（isValidAccountName/normalizeAsciiInput）
 │   │   ├── api-request.ts       # 前端 API 请求封装（自动带 x-session）
 │   │   ├── fangguo.ts           # 方果 API 客户端（店铺/订单详情/推单/状态映射）
 │   │   ├── fangguo-live.ts      # 订单实时透传（tidList分页→detail并发8→60s全局缓存→店铺过滤）
 │   │   ├── push-billing.ts      # 日结计费（惰性结算settleUser/配额getPushBillingStats/幂等recordPushes）
 │   │   ├── billing.ts           # PUSH_FEE=0.5 常量（旧扣费函数已停用）
-│   │   ├── supabase-browser.ts  # 浏览器端 Supabase 客户端
+│   │   ├── supabase-browser.ts  # 浏览器端 Supabase 客户端（已无引用，仅保留）
 │   │   ├── supabase-config-inject.tsx  # Supabase 配置注入组件
 │   │   └── utils.ts             # 通用工具（cn 等）
 │   ├── server.ts                # 自定义启动（next 仅启动服务，无定时同步）
@@ -76,7 +82,9 @@
 
 | 表名 | 说明 | 关键字段 |
 |------|------|----------|
-| `user_balances` | 用户余额（RLS隔离） | user_id, balance, frozen_balance, total_recharge, total_consume, is_admin |
+| `auth_accounts` | 自建认证账号 | user_id(PK), account(UNIQUE), password_hash(scrypt) |
+| `auth_sessions` | 登录会话 | token(PK), user_id, expires_at(7天) |
+| `user_balances` | 用户余额 | user_id, balance, frozen_balance, total_recharge, total_consume, is_admin |
 | `wallet_transactions` | 钱包流水 | user_id, type(recharge/consume/refund), amount, description, balance_after |
 | `push_records` | 推单计费记录（日结依据） | user_id, order_no, push_date, fee_applied, settled_at；UNIQUE(user_id, order_no) |
 | `shops` | 用户店铺（方果店铺分配） | user_id, platform, shop_name, fangguo_shop_id, platform_code, brand_name, status |
@@ -120,18 +128,25 @@
 
 **已移除**：定时同步调度器（fangguo-sync.ts）、订单落库、解码（batch-decode/[id]/decode）、商品管理、模拟数据（demo/seed）；遗留表 orders/products 已从数据库删除
 
-## 鉴权方式
+## 鉴权方式（自建账号密码认证）
 
 **前后端统一使用 `x-session` header**
 
-- 前端：`api-request.ts` 中自动从 `useAuth()` 获取 session 并注入 header
-- 后端：各 API route 通过 `getCurrentUser(token)` 验证 token
-- RLS：业务表启用行级安全，用户只能访问自己的数据
+- **认证体系**：完全自建，不依赖 Supabase Auth（auth.users 已清空废弃）
+  - `auth_accounts` 表：账号（account 唯一）+ scrypt 密码哈希（`src/lib/password.ts`：hashPassword/verifyPassword，格式 `scrypt$<salt>$<hash>`）
+  - `auth_sessions` 表：登录会话（token 主键，7 天过期，过期访问即失效清理）
+- **登录流程**：`POST /api/auth/login`（account+password）→ 校验密码 → 生成 64 位随机 token 写入 auth_sessions → 返回 `{token, user}`；前端存 localStorage
+- **前端**：`api-request.ts` 自动从 `useAuth()` 获取 token 并注入 `x-session` header
+- **后端**：各 API route 通过 `getCurrentUser(token)`（`src/lib/auth-utils.ts`）查 auth_sessions 验证，返回 `{id, account}`
+- **数据访问**：业务表查询统一走 `getSupabaseAdminClient()`（service role）+ 显式 `.eq('user_id', user.id)` 过滤，不依赖 RLS
 
 ## API 接口清单
 
 | 方法 | 路径 | 功能 | 鉴权 |
 |------|------|------|------|
+| POST | /api/auth/login | 登录（account/password → token） | 否 |
+| POST | /api/auth/logout | 登出（删除会话） | 是 |
+| GET | /api/auth/me | 当前用户信息 | 是 |
 | GET | /api/balance | 查询余额（触发惰性日结算） | 是 |
 | GET | /api/wallet/transactions | 钱包流水列表 | 是 |
 | POST | /api/wallet/recharge | 模拟充值 | 是 |
@@ -141,7 +156,7 @@
 | GET | /api/admin/check | 检查是否管理员 | 是 |
 | GET | /api/admin/users | 用户列表（含余额） | 管理员 |
 | POST | /api/admin/users | 创建用户（账号/密码/初始余额） | 管理员 |
-| DELETE | /api/admin/users | 删除用户（body: {userId}；防护自身与管理员；级联清理 shops/wallet_transactions/push_records/user_balances + auth 账号，任一清理失败即中止返回500） | 管理员 |
+| DELETE | /api/admin/users | 删除用户（body: {userId}；防护自身与管理员；级联清理 auth_sessions/auth_accounts/shops/wallet_transactions/push_records/user_balances，任一清理失败即中止返回500） | 管理员 |
 | POST | /api/admin/adjust-balance | 调整用户余额（body: {userId, amount, description}，正充负扣） | 管理员 |
 | GET | /api/admin/transactions | 全局流水记录 | 管理员 |
 | GET | /api/admin/push-records | 推单日账单（days 1-31，用户×日期聚合+汇总） | 管理员 |
@@ -165,16 +180,15 @@
 ### LiveOrder 关键字段
 order_no（=tid，前端行主键）、sys_tid、platform、platform_desc、order_type_desc、status、decode_status、df_status、product_name、product_image、spec、merchant_code、quantity、price、pay_time、deliver_time、tracking_no、logistics_company、store_name、factory_id、buyer_remark、shop_remark（**无收件人字段**：方果 detail 接口不返回 receiver，Temu 全托管不提供）
 
-## 账号体系（账号名登录，非邮箱）
+## 账号体系（自建账号密码）
 
-- **账号映射**：用户使用账号名（如 `admin`、`test`）登录，底层 Supabase Auth 走邮箱协议，内部映射为 `账号名@guotui.local`（`src/lib/account.ts`：accountToEmail / displayAccountName / isValidAccountName）
-- **登录页**：仅账号+密码输入框；输入含 `@` 时按完整邮箱处理（历史邮箱账号兼容）
-- **无自助注册**：新用户由管理员在 `/admin` 后台创建（填账号名，后端自动映射内部邮箱）
+- **纯账号登录**：用户使用账号名（如 `admin`、`test`）+ 密码登录，无邮箱概念，无邮箱映射（旧 `@guotui.local` 映射已废弃）
+- **登录页**：仅账号+密码输入框
+- **无自助注册**：新用户由管理员在 `/admin` 后台创建（账号+密码+初始余额）
 - **管理员标记**：`user_balances.is_admin = true`（通过 SQL 设置）
-- **创建用户**：`email_confirm=true` 创建后立即可登录；账号名校验：字母开头，仅字母/数字/`._-`，2-32 位
-- **展示规则**：`@guotui.local` 域邮箱显示为纯账号名，历史邮箱原样显示
-- **预置账号**：`admin`/`admin@123`（管理员）、`test`/`test123`（普通用户，已分配 4 个店铺）；另有历史遗留账号 seller001@example.com（无店铺，密码未知）；原管理员 test@example.com 已删除
-- **管理员 API**：使用 `COZE_SUPABASE_SERVICE_ROLE_KEY` 绕过 RLS，普通用户接口走 RLS 隔离
+- **创建用户**：账号名校验（`src/lib/account.ts` isValidAccountName：字母开头，仅字母/数字/`._-`，2-32 位）+ 密码至少 6 位；输入自动做全角转半角清洗（normalizeAsciiInput）
+- **预置账号**：`admin`/`admin@123`（管理员）、`test`/`test123`（普通用户，已分配 4 个店铺）；seller001@example.com 及相关 Supabase Auth 账号已全部清理
+- **会话**：token 存 localStorage（key `guotui_token`），7 天有效期，过期自动 401 踢回登录页
 
 ## 开发命令
 
@@ -194,9 +208,9 @@ order_no（=tid，前端行主键）、sys_tid、platform、platform_desc、orde
 ## 关键注意事项
 
 1. **Hydration 安全**：所有使用登录态的组件必须配合 `useAuth()` + `isLoading` 判断，避免 SSR 与客户端不一致
-2. **RLS 策略**：所有用户私有数据已启用 RLS，新增表时务必同步配置策略
+2. **RLS 策略**：业务查询统一走 service role client + 显式 user_id 过滤（自建认证后不再依赖 RLS 做隔离，但存量策略保留）
 3. **日结幂等性**：三重保障——fee_applied 标记 + per-user Promise 锁（防并发结算）+ 余额条件更新（乐观锁）
-4. **x-session 约定**：前后端鉴权 header key 固定为 `x-session`，value 为 supabase access_token
+4. **x-session 约定**：前后端鉴权 header key 固定为 `x-session`，value 为自建会话 token（auth_sessions.token，64位随机串）
 5. **分页格式**：列表接口统一返回 `{ list, total, page, pageSize, ...extra }` 格式
 6. **订单无持久化**：任何订单相关逻辑（状态/筛选/统计）均基于方果 API 实时数据 + 内存计算，重启即失效（缓存仅 60 秒）
 7. **测试副作用**：验证过程中产生过小额充值/调账流水属正常测试数据（seller001@example.com 为历史演示账号，店铺已转给 test，密码未知）

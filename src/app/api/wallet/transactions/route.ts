@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser, ensureUserBalance } from '@/lib/auth-utils';
-import { getSupabaseClient } from '@/storage/database/supabase-client';
+import { getSupabaseAdminClient } from '@/storage/database/supabase-client';
 
 // 获取钱包流水记录
 export async function GET(req: NextRequest) {
@@ -11,14 +11,14 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: authError || '认证失败' }, { status: 401 });
   }
 
-  const client = getSupabaseClient(token ?? undefined);
+  const client = getSupabaseAdminClient();
   const { searchParams } = new URL(req.url);
   const page = parseInt(searchParams.get('page') || '1', 10);
   const pageSize = parseInt(searchParams.get('pageSize') || '20', 10);
   const type = searchParams.get('type');
 
   try {
-    await ensureUserBalance(user.id, client);
+    await ensureUserBalance(user.id);
 
     let query = client
       .from('wallet_transactions')

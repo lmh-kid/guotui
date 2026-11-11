@@ -1,6 +1,10 @@
 import { pgTable, serial, timestamp, index, pgPolicy, varchar, uuid, numeric, text, jsonb, integer, unique, boolean, date } from "drizzle-orm/pg-core"
 import { sql } from "drizzle-orm"
 
+function gen_random_uuid(): string {
+  return sql`gen_random_uuid()` as unknown as string;
+}
+
 
 
 export const healthCheck = pgTable("health_check", {
@@ -9,7 +13,7 @@ export const healthCheck = pgTable("health_check", {
 });
 
 export const walletTransactions = pgTable("wallet_transactions", {
-	id: varchar({ length: 36 }).default(sql`gen_random_uuid()`).primaryKey().notNull(),
+	id: varchar({ length: 36 }).default(gen_random_uuid()).primaryKey().notNull(),
 	userId: uuid("user_id").notNull(),
 	type: varchar({ length: 20 }).notNull(),
 	amount: numeric({ precision: 12, scale:  2 }).notNull(),
@@ -35,7 +39,7 @@ export const systemConfigs = pgTable("system_configs", {
 });
 
 export const shops = pgTable("shops", {
-	id: varchar({ length: 36 }).default(sql`gen_random_uuid()`).primaryKey().notNull(),
+	id: varchar({ length: 36 }).default(gen_random_uuid()).primaryKey().notNull(),
 	userId: uuid("user_id").notNull(),
 	platform: varchar({ length: 32 }).notNull(),
 	shopName: varchar("shop_name", { length: 128 }).notNull(),
@@ -58,7 +62,7 @@ export const shops = pgTable("shops", {
 ]);
 
 export const userBalances = pgTable("user_balances", {
-	id: varchar({ length: 36 }).default(sql`gen_random_uuid()`).primaryKey().notNull(),
+	id: varchar({ length: 36 }).default(gen_random_uuid()).primaryKey().notNull(),
 	userId: uuid("user_id").notNull(),
 	balance: numeric({ precision: 12, scale:  2 }).default('0.00').notNull(),
 	frozenBalance: numeric("frozen_balance", { precision: 12, scale:  2 }).default('0.00').notNull(),
@@ -87,4 +91,25 @@ export const pushRecords = pgTable("push_records", {
 }, (table) => [
 	index("push_records_user_date_idx").using("btree", table.userId.asc().nullsLast().op("text_ops"), table.pushDate.asc().nullsLast().op("date_ops"), table.feeApplied.asc().nullsLast().op("text_ops")),
 	unique("push_records_user_id_order_no_key").on(table.userId, table.orderNo),
+]);
+
+export const authAccounts = pgTable("auth_accounts", {
+	userId: uuid("user_id").primaryKey().notNull(),
+	account: varchar({ length: 64 }).notNull(),
+	passwordHash: text("password_hash").notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("auth_accounts_account_idx").using("btree", table.account.asc().nullsLast().op("text_ops")),
+	unique("auth_accounts_account_key").on(table.account),
+]);
+
+export const authSessions = pgTable("auth_sessions", {
+	token: varchar({ length: 64 }).primaryKey().notNull(),
+	userId: uuid("user_id").notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	lastUsedAt: timestamp("last_used_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	expiresAt: timestamp("expires_at", { withTimezone: true, mode: 'string' }).notNull(),
+}, (table) => [
+	index("auth_sessions_user_id_idx").using("btree", table.userId.asc().nullsLast().op("uuid_ops")),
 ]);

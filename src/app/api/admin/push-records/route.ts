@@ -36,13 +36,13 @@ export async function GET(req: NextRequest) {
 
     if (error) throw error;
 
-    // 用户邮箱映射
+    // 用户账号名映射（自建认证体系）
     const userIds = [...new Set((records ?? []).map((r) => r.user_id))];
     const { data: users } = await supabase
-      .from('user_balances')
-      .select('user_id, email')
+      .from('auth_accounts')
+      .select('user_id, account')
       .in('user_id', userIds);
-    const emailMap = new Map((users ?? []).map((u) => [u.user_id, u.email]));
+    const emailMap = new Map((users ?? []).map((u) => [u.user_id, u.account]));
 
     // 按 用户×日期 聚合
     const grouped = new Map<string, {

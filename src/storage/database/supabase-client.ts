@@ -15,14 +15,9 @@ function loadEnv(): void {
   }
 
   try {
-    try {
-      require('dotenv').config();
-      if (process.env.COZE_SUPABASE_URL && process.env.COZE_SUPABASE_ANON_KEY) {
-        envLoaded = true;
-        return;
-      }
-    } catch {
-      // dotenv not available
+    if (process.env.COZE_SUPABASE_URL && process.env.COZE_SUPABASE_ANON_KEY) {
+      envLoaded = true;
+      return;
     }
 
     const pythonCode = `
@@ -89,6 +84,11 @@ function getSupabaseServiceRoleKey(): string | undefined {
   return process.env.COZE_SUPABASE_SERVICE_ROLE_KEY;
 }
 
+interface SupabaseGlobalOptions {
+  headers?: Record<string, string>;
+  fetch?: typeof globalThis.fetch;
+}
+
 function getSupabaseClient(token?: string): SupabaseClient {
   const { url, anonKey } = getSupabaseCredentials();
 
@@ -100,7 +100,7 @@ function getSupabaseClient(token?: string): SupabaseClient {
     key = serviceRoleKey ?? anonKey;
   }
 
-  const globalOptions: Record<string, any> = {};
+  const globalOptions: SupabaseGlobalOptions = {};
   if (token) {
     globalOptions.headers = { Authorization: `Bearer ${token}` };
   }
@@ -133,7 +133,7 @@ function getSupabaseAdminClient(): SupabaseClient {
     throw new Error('COZE_SUPABASE_SERVICE_ROLE_KEY is not set');
   }
 
-  const globalOptions: Record<string, any> = {};
+  const globalOptions: SupabaseGlobalOptions = {};
   try {
     const buffer = getReportBuffer();
     if (buffer) {

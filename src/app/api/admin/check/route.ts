@@ -10,20 +10,12 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: authError || '请先登录' }, { status: 401 });
     }
 
-    const client = getCurrentUserClient(token!);
-    await ensureUserBalance(user.id, client);
+    await ensureUserBalance(user.id);
+    const isAdmin = await checkIsAdmin(user.id);
 
-    const isAdmin = await checkIsAdmin(user.id, client);
-
-    return NextResponse.json({ isAdmin, email: user.email });
+    return NextResponse.json({ isAdmin, account: user.account });
   } catch (error) {
     console.error('[Admin Check] 错误:', error);
     return NextResponse.json({ error: '服务器错误' }, { status: 500 });
   }
-}
-
-// 辅助函数
-import { getSupabaseClient } from '@/storage/database/supabase-client';
-function getCurrentUserClient(token: string) {
-  return getSupabaseClient(token);
 }

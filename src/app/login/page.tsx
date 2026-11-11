@@ -2,18 +2,16 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { useSupabaseConfig } from '@/lib/supabase-config-inject';
-import { getSupabaseBrowserClientWithRetry } from '@/lib/supabase-browser';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Package2, Eye, EyeOff } from 'lucide-react';
-import { accountToEmail } from '@/lib/account';
+import { SESSION_TOKEN_KEY, AUTH_STATE_EVENT } from '@/lib/auth-provider';
+import { normalizeAsciiInput } from '@/lib/account';
 
 export default function LoginPage() {
   const router = useRouter();
-  const { isLoading, error } = useSupabaseConfig();
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
@@ -27,49 +25,34 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const supabase = await getSupabaseBrowserClientWithRetry();
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: accountToEmail(account),
-        password,
+      // 后端统一校验账号密码（自建认证，无邮箱协议）
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          // 归一化：中文输入法的全角字符（＠ ａ １ 等）会导致校验必然失败
+          account: normalizeAsciiInput(account),
+          password: normalizeAsciiInput(password),
+        }),
       });
 
-      if (error) throw error;
+      const data = (await res.json()) as { token?: string; error?: string };
 
-      if (data.session) {
-        router.push('/');
+      if (!res.ok || !data.token) {
+        setMessage({ type: 'error', text: data.error || '账号或密码错误' });
+        return;
       }
+
+      localStorage.setItem(SESSION_TOKEN_KEY, data.token);
+      window.dispatchEvent(new CustomEvent(AUTH_STATE_EVENT));
+      router.push('/');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '登录失败';
-      setMessage({
-        type: 'error',
-        text: msg.includes('Invalid') || msg.includes('凭证') ? '账号或密码错误' : msg,
-      });
+      setMessage({ type: 'error', text: msg });
     } finally {
       setLoading(false);
     }
   };
-
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-gray-500">加载中...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="text-center">
-          <p className="text-red-500 mb-4">配置加载失败</p>
-          <p className="text-gray-500 text-sm">{error}</p>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50 p-4">
@@ -108,6 +91,7 @@ export default function LoginPage() {
                   <Input
                     id="password"
                     type={showPassword ? 'text' : 'password'}
+                    autoComplete="current-password"
                     placeholder="请输入密码"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}

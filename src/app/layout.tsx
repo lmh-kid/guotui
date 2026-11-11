@@ -1,6 +1,5 @@
 import type { Metadata } from 'next';
 import './globals.css';
-import { SupabaseConfigProvider } from '@/lib/supabase-config-inject';
 import AuthProvider from '@/components/auth-provider-wrapper';
 import { Toaster } from '@/components/ui/sonner';
 
@@ -29,12 +28,10 @@ export default function RootLayout({
   return (
     <html lang="zh-CN">
       <body className={`antialiased bg-gray-50`}>
-        <SupabaseConfigProvider>
-          <AuthProvider>
-            {children}
-            <Toaster />
-          </AuthProvider>
-        </SupabaseConfigProvider>
+        <AuthProvider>
+          {children}
+          <Toaster />
+        </AuthProvider>
       </body>
     </html>
   );

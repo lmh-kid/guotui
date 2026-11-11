@@ -1,92 +1,103 @@
 'use client';
 
-import { useEffect, useState, createContext, useContext, ReactNode } from 'react';
+import { useEffect, useState, createContext, useContext, ReactNode, useCallback } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
-import { useSupabaseConfig } from '@/lib/supabase-config-inject';
-import { getSupabaseBrowserClientWithRetry } from '@/lib/supabase-browser';
-import type { User } from '@supabase/supabase-js';
+
+export const SESSION_TOKEN_KEY = 'guotui_session_token';
+
+export interface SessionUser {
+  id: string;
+  account: string;
+  isAdmin: boolean;
+}
 
 interface AuthContextType {
-  user: User | null;
+  user: SessionUser | null;
   isLoading: boolean;
+  refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType>({
   user: null,
   isLoading: true,
+  refreshUser: async () => {},
 });
 
 export function useAuth() {
   return useContext(AuthContext);
 }
 
-const PUBLIC_PATHS = ['/login', '/api/supabase-config'];
+/** 触发全站登录态刷新（登录/登出后调用） */
+export const AUTH_STATE_EVENT = 'guotui-auth-changed';
+
+const PUBLIC_PATHS = ['/login'];
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<SessionUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const router = useRouter();
   const pathname = usePathname();
-  const { isLoading: configLoading } = useSupabaseConfig();
+
+  const checkAuth = useCallback(async () => {
+    try {
+      const token = localStorage.getItem(SESSION_TOKEN_KEY);
+      if (!token) {
+        setUser(null);
+        return;
+      }
+
+      const res = await fetch('/api/auth/me', {
+        headers: { 'x-session': token },
+      });
+
+      if (!res.ok) {
+        // 会话失效，清理本地 token
+        localStorage.removeItem(SESSION_TOKEN_KEY);
+        setUser(null);
+        return;
+      }
+
+      const data = (await res.json()) as { user: SessionUser };
+      setUser(data.user);
+    } catch {
+      setUser(null);
+    }
+  }, []);
 
   useEffect(() => {
-    if (configLoading) return;
-
     let mounted = true;
 
-    const checkAuth = async () => {
-      try {
-        const supabase = await getSupabaseBrowserClientWithRetry();
-        const { data: { user: currentUser } } = await supabase.auth.getUser();
-        
-        if (!mounted) return;
-        
-        setUser(currentUser);
-
-        // 检查是否需要跳转
-        const isPublicPath = PUBLIC_PATHS.some(p => pathname?.startsWith(p));
-        
-        if (!currentUser && !isPublicPath) {
-          router.push('/login');
-        } else if (currentUser && pathname === '/login') {
-          router.push('/');
-        }
-      } catch {
-        if (!mounted) return;
-        setUser(null);
-        
-        const isPublicPath = PUBLIC_PATHS.some(p => pathname?.startsWith(p));
-        if (!isPublicPath) {
-          router.push('/login');
-        }
-      } finally {
-        if (mounted) {
-          setIsLoading(false);
-        }
-      }
+    const run = async () => {
+      await checkAuth();
+      if (mounted) setIsLoading(false);
     };
+    run();
 
-    checkAuth();
-
-    // 监听认证状态变化
-    let subscriptionRef: { unsubscribe: () => void } | null = null;
-    getSupabaseBrowserClientWithRetry().then((supabase) => {
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-        if (mounted) {
-          setUser(session?.user || null);
-        }
-      });
-      subscriptionRef = subscription;
-    });
+    // 登录/登出后由页面派发事件，同步刷新登录态
+    const handleAuthChanged = () => {
+      run();
+    };
+    window.addEventListener(AUTH_STATE_EVENT, handleAuthChanged);
 
     return () => {
       mounted = false;
-      subscriptionRef?.unsubscribe();
+      window.removeEventListener(AUTH_STATE_EVENT, handleAuthChanged);
     };
-  }, [configLoading, pathname, router]);
+  }, [checkAuth]);
+
+  useEffect(() => {
+    if (isLoading) return;
+    const isPublicPath = PUBLIC_PATHS.some((p) => pathname?.startsWith(p));
+
+    if (!user && !isPublicPath) {
+      router.push('/login');
+    } else if (user && pathname === '/login') {
+      router.push('/');
+    }
+  }, [user, isLoading, pathname, router]);
 
   return (
-    <AuthContext.Provider value={{ user, isLoading: configLoading || isLoading }}>
+    <AuthContext.Provider value={{ user, isLoading, refreshUser: checkAuth }}>
       {children}
     </AuthContext.Provider>
   );

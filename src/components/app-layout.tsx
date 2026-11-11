@@ -27,8 +27,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { apiRequest } from '@/lib/api-request';
-import { getSupabaseBrowserClientWithRetry } from '@/lib/supabase-browser';
-import { displayAccountName } from '@/lib/account';
+import { SESSION_TOKEN_KEY, AUTH_STATE_EVENT } from '@/lib/auth-provider';
 
 interface AppLayoutProps {
   children: ReactNode;
@@ -88,8 +87,13 @@ export default function AppLayout({ children }: AppLayoutProps) {
   }, [user]);
 
   const handleLogout = async () => {
-    const supabase = await getSupabaseBrowserClientWithRetry();
-    await supabase.auth.signOut();
+    try {
+      await apiRequest('/api/auth/logout', { method: 'POST' });
+    } catch {
+      // 登出失败不阻塞本地清理
+    }
+    localStorage.removeItem(SESSION_TOKEN_KEY);
+    window.dispatchEvent(new CustomEvent(AUTH_STATE_EVENT));
     router.push('/login');
   };
 
@@ -154,14 +158,14 @@ export default function AppLayout({ children }: AppLayoutProps) {
                     </AvatarFallback>
                   </Avatar>
                   <span className="hidden sm:inline text-sm">
-                    {displayAccountName(user.email)}
+                    {user.account}
                   </span>
                   <ChevronDown className="w-4 h-4" />
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
                 <DropdownMenuLabel>
-                  <div className="font-normal">账号：{displayAccountName(user.email)}</div>
+                  <div className="font-normal">账号：{user.account}</div>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={() => router.push('/wallet')}>

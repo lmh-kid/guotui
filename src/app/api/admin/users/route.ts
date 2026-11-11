@@ -1,45 +1,46 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { randomUUID } from 'crypto';
 import { getCurrentUser, checkIsAdmin, ensureUserBalance } from '@/lib/auth-utils';
 import { getSupabaseAdminClient } from '@/storage/database/supabase-client';
-import { accountToEmail, isValidAccountName } from '@/lib/account';
+import { isValidAccountName, normalizeAsciiInput } from '@/lib/account';
+import { hashPassword } from '@/lib/password';
 
 export async function GET(request: NextRequest) {
   try {
     const token = request.headers.get('x-session');
-    const { user, error: authError } = await getCurrentUser(token ?? undefined);
+    const { user, error: authError } = await getCurrentUser(token);
 
     if (authError || !user) {
       return NextResponse.json({ error: authError || '请先登录' }, { status: 401 });
     }
 
-    const client = getCurrentUserClient(token!);
-    await ensureUserBalance(user.id, client);
+    await ensureUserBalance(user.id);
 
-    const isAdmin = await checkIsAdmin(user.id, client);
+    const isAdmin = await checkIsAdmin(user.id);
     if (!isAdmin) {
       return NextResponse.json({ error: '无权限访问' }, { status: 403 });
     }
 
-    // 使用 service role 查询所有用户（绕过 RLS）
     const adminClient = getSupabaseAdminClient();
 
-    // 获取所有 auth 用户
-    const { data: authUsers, error: authError2 } = await adminClient.auth.admin.listUsers();
-    if (authError2) throw new Error(`获取用户列表失败: ${authError2.message}`);
+    // 账号表 left join 余额表（自建认证体系，无 Supabase Auth 依赖）
+    const { data: accounts, error: accError } = await adminClient
+      .from('auth_accounts')
+      .select('user_id, account, created_at');
+    if (accError) throw new Error(`获取用户列表失败: ${accError.message}`);
 
-    // 获取所有用户余额
     const { data: balances, error: balError } = await adminClient
       .from('user_balances')
       .select('*');
     if (balError) throw new Error(`获取余额失败: ${balError.message}`);
 
-    // 合并数据
-    const userList = authUsers.users.map((u) => {
-      const bal = balances?.find((b) => b.user_id === u.id);
+    const userList = (accounts || []).map((a) => {
+      const bal = balances?.find((b) => b.user_id === a.user_id);
       return {
-        id: u.id,
-        email: u.email,
-        createdAt: u.created_at,
+        id: a.user_id,
+        account: a.account,
+        email: a.account, // 兼容旧字段名
+        createdAt: a.created_at,
         balance: bal?.balance ?? '0.00',
         frozenBalance: bal?.frozen_balance ?? '0.00',
         totalRecharge: bal?.total_recharge ?? '0.00',
@@ -59,39 +60,34 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const token = request.headers.get('x-session');
-    const { user, error: authError } = await getCurrentUser(token ?? undefined);
+    const { user, error: authError } = await getCurrentUser(token);
 
     if (authError || !user) {
       return NextResponse.json({ error: authError || '请先登录' }, { status: 401 });
     }
 
-    const client = getCurrentUserClient(token!);
-    await ensureUserBalance(user.id, client);
-
-    const isAdmin = await checkIsAdmin(user.id, client);
+    const isAdmin = await checkIsAdmin(user.id);
     if (!isAdmin) {
       return NextResponse.json({ error: '无权限访问' }, { status: 403 });
     }
 
     const body = await request.json();
-    const { account, email, password, initialBalance } = body;
+    const { account: accountRaw, password: passwordRaw, initialBalance } = body;
 
-    // 账号制：输入账号名（如 seller01）或完整邮箱（兼容历史格式）
-    const rawName = String(account || email || '').trim();
-    if (!rawName) {
+    const account = normalizeAsciiInput(String(accountRaw ?? '')).toLowerCase();
+    if (!account) {
       return NextResponse.json({ error: '请输入账号' }, { status: 400 });
     }
-    if (!rawName.includes('@') && !isValidAccountName(rawName)) {
+    if (!isValidAccountName(account)) {
       return NextResponse.json(
         { error: '账号格式不正确：字母开头，仅支持字母/数字/._-，2-32位' },
         { status: 400 }
       );
     }
-    if (!password || typeof password !== 'string' || password.length < 6) {
+    const password = normalizeAsciiInput(String(passwordRaw ?? ''));
+    if (!password || password.length < 6) {
       return NextResponse.json({ error: '密码长度至少6位' }, { status: 400 });
     }
-
-    const loginEmail = accountToEmail(rawName);
 
     const balance = parseFloat(initialBalance) || 0;
     if (balance < 0) {
@@ -100,39 +96,38 @@ export async function POST(request: NextRequest) {
 
     const adminClient = getSupabaseAdminClient();
 
-    // 检查账号是否已存在
-    const { data: existingUsers } = await adminClient.auth.admin.listUsers();
-    const exists = existingUsers?.users?.some((u) => u.email?.toLowerCase() === loginEmail.toLowerCase());
-    if (exists) {
+    // 账号唯一性检查
+    const { data: existing } = await adminClient
+      .from('auth_accounts')
+      .select('user_id')
+      .eq('account', account)
+      .maybeSingle();
+    if (existing) {
       return NextResponse.json({ error: '该账号已被使用' }, { status: 400 });
     }
 
-    // 创建用户（email_confirm: true 直接可用，无需邮箱验证）
-    const { data: newUser, error: createError } = await adminClient.auth.admin.createUser({
-      email: loginEmail,
-      password,
-      email_confirm: true,
-    });
+    // 创建账号 + 余额记录
+    const newUserId = randomUUID();
+    const { data: newUser, error: createError } = await adminClient
+      .from('auth_accounts')
+      .insert({ user_id: newUserId, account, password_hash: await hashPassword(password) })
+      .select('user_id, account')
+      .single();
 
-    if (createError) {
-      return NextResponse.json({ error: `创建用户失败: ${createError.message}` }, { status: 400 });
+    if (createError || !newUser) {
+      return NextResponse.json({ error: `创建用户失败: ${createError?.message}` }, { status: 400 });
     }
 
-    // 初始化余额账户
-    const { error: balanceError } = await adminClient.from('user_balances').insert({
-      user_id: newUser.user.id,
+    await adminClient.from('user_balances').insert({
+      user_id: newUser.user_id,
       balance: balance.toFixed(2),
       total_recharge: balance.toFixed(2),
     });
 
-    if (balanceError) {
-      console.error('[Admin CreateUser] 初始化余额失败:', balanceError);
-    }
-
     // 如果有初始余额，记录一笔充值流水
     if (balance > 0) {
       await adminClient.from('wallet_transactions').insert({
-        user_id: newUser.user.id,
+        user_id: newUser.user_id,
         type: 'recharge',
         amount: balance.toFixed(2),
         balance_after: balance.toFixed(2),
@@ -143,7 +138,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       message: '用户创建成功',
-      user: { id: newUser.user.id, email: newUser.user.email },
+      user: { id: newUser.user_id, account: newUser.account },
     });
   } catch (error) {
     console.error('[Admin CreateUser] 错误:', error);
@@ -151,24 +146,17 @@ export async function POST(request: NextRequest) {
   }
 }
 
-import { getSupabaseClient } from '@/storage/database/supabase-client';
-
-function getCurrentUserClient(token: string) {
-  return getSupabaseClient(token);
-}
-
 // 删除用户（管理员）
 export async function DELETE(request: NextRequest) {
   try {
     const token = request.headers.get('x-session');
-    const { user, error: authError } = await getCurrentUser(token ?? undefined);
+    const { user, error: authError } = await getCurrentUser(token);
 
     if (authError || !user) {
       return NextResponse.json({ error: authError || '请先登录' }, { status: 401 });
     }
 
-    const client = getCurrentUserClient(token!);
-    const isAdmin = await checkIsAdmin(user.id, client);
+    const isAdmin = await checkIsAdmin(user.id);
     if (!isAdmin) {
       return NextResponse.json({ error: '无权限访问' }, { status: 403 });
     }
@@ -199,8 +187,10 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: '不能删除管理员账号' }, { status: 400 });
     }
 
-    // 清理关联数据：店铺分配、钱包流水、推单计费记录、余额（任一失败则中止，避免产生孤儿数据）
+    // 清理关联数据：会话、账号、店铺分配、钱包流水、推单计费记录、余额（任一失败则中止，避免产生孤儿数据）
     const cleanupTables: Array<{ table: string; label: string }> = [
+      { table: 'auth_sessions', label: '登录会话' },
+      { table: 'auth_accounts', label: '账号' },
       { table: 'shops', label: '店铺分配' },
       { table: 'wallet_transactions', label: '钱包流水' },
       { table: 'push_records', label: '推单记录' },
@@ -215,13 +205,6 @@ export async function DELETE(request: NextRequest) {
           { status: 500 }
         );
       }
-    }
-
-    // 删除认证账号
-    const { error: deleteError } = await adminClient.auth.admin.deleteUser(userId);
-    if (deleteError) {
-      console.error('[Admin DeleteUser] 删除认证账号失败:', deleteError);
-      return NextResponse.json({ error: `删除账号失败: ${deleteError.message}` }, { status: 500 });
     }
 
     return NextResponse.json({ success: true, message: '用户已删除' });

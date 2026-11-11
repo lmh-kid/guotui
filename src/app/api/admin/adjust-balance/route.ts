@@ -11,8 +11,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: authError || '请先登录' }, { status: 401 });
     }
 
-    const client = getCurrentUserClient(token!);
-    const isAdmin = await checkIsAdmin(user.id, client);
+    const isAdmin = await checkIsAdmin(user.id);
     if (!isAdmin) {
       return NextResponse.json({ error: '无权限访问' }, { status: 403 });
     }
@@ -90,10 +89,4 @@ export async function POST(request: NextRequest) {
     console.error('[Admin Adjust Balance] 错误:', error);
     return NextResponse.json({ error: '服务器错误' }, { status: 500 });
   }
-}
-
-import { getSupabaseClient } from '@/storage/database/supabase-client';
-
-function getCurrentUserClient(token: string) {
-  return getSupabaseClient(token);
 }

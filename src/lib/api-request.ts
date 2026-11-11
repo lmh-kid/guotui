@@ -1,15 +1,14 @@
 'use client';
 
-import { getSupabaseBrowserClientWithRetry } from './supabase-browser';
+import { SESSION_TOKEN_KEY } from './auth-provider';
 
 export async function apiRequest<T = unknown>(
   path: string,
   options?: RequestInit
 ): Promise<T> {
-  const supabase = await getSupabaseBrowserClientWithRetry();
-  const { data: { session } } = await supabase.auth.getSession();
+  const token = localStorage.getItem(SESSION_TOKEN_KEY);
 
-  if (!session) {
+  if (!token) {
     window.location.href = '/login';
     throw new Error('未登录');
   }
@@ -19,17 +18,18 @@ export async function apiRequest<T = unknown>(
     headers: {
       ...(options?.headers || {}),
       'Content-Type': 'application/json',
-      'x-session': session.access_token,
+      'x-session': token,
     },
   });
 
   if (response.status === 401) {
+    localStorage.removeItem(SESSION_TOKEN_KEY);
     window.location.href = '/login';
     throw new Error('登录已过期');
   }
 
   const data = await response.json();
-  
+
   if (!response.ok) {
     throw new Error(data.error || '请求失败');
   }

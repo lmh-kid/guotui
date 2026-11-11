@@ -11,8 +11,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: authError || '请先登录' }, { status: 401 });
     }
 
-    const client = getCurrentUserClient(token!);
-    const isAdmin = await checkIsAdmin(user.id, client);
+    const isAdmin = await checkIsAdmin(user.id);
     if (!isAdmin) {
       return NextResponse.json({ error: '无权限访问' }, { status: 403 });
     }
@@ -41,13 +40,16 @@ export async function GET(request: NextRequest) {
     const { data, error, count } = await query;
     if (error) throw new Error(`查询流水失败: ${error.message}`);
 
-    // 获取所有用户邮箱映射
-    const { data: authUsers } = await adminClient.auth.admin.listUsers();
-    const emailMap = new Map(authUsers.users.map((u) => [u.id, u.email]));
+    // 获取账号名映射（自建认证体系）
+    const { data: accounts } = await adminClient
+      .from('auth_accounts')
+      .select('user_id, account');
+    const accountMap = new Map((accounts || []).map((a) => [a.user_id, a.account]));
 
     const list = (data || []).map((t) => ({
       ...t,
-      email: emailMap.get(t.user_id) || '未知',
+      account: accountMap.get(t.user_id) || '未知',
+      email: accountMap.get(t.user_id) || '未知', // 兼容旧字段名
     }));
 
     return NextResponse.json({
@@ -60,10 +62,4 @@ export async function GET(request: NextRequest) {
     console.error('[Admin Transactions] 错误:', error);
     return NextResponse.json({ error: '服务器错误' }, { status: 500 });
   }
-}
-
-import { getSupabaseClient } from '@/storage/database/supabase-client';
-
-function getCurrentUserClient(token: string) {
-  return getSupabaseClient(token);
 }

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser, ensureUserBalance } from '@/lib/auth-utils';
-import { getSupabaseClient } from '@/storage/database/supabase-client';
+import { getCurrentUser, ensureUserBalance, touchSession } from '@/lib/auth-utils';
+import { getSupabaseAdminClient } from '@/storage/database/supabase-client';
 import { settleUser } from '@/lib/push-billing';
 
 /**
@@ -15,11 +15,11 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: authError || '认证失败' }, { status: 401 });
   }
 
-  const client = getSupabaseClient(token ?? undefined);
+  const client = getSupabaseAdminClient();
 
   try {
     // 确保余额记录存在
-    await ensureUserBalance(user.id, client);
+    await ensureUserBalance(user.id);
 
     // 惰性日结算（昨日推单扣费；失败不阻塞余额查询）
     await settleUser(user.id).catch((e) =>
@@ -33,6 +33,8 @@ export async function GET(req: NextRequest) {
       .single();
 
     if (error) throw error;
+
+    await touchSession(token as string);
 
     return NextResponse.json(data);
   } catch (err: unknown) {
