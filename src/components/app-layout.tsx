@@ -6,7 +6,6 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-provider';
 import {
   Package,
-  ShoppingCart,
   Settings,
   Wallet,
   LogOut,
@@ -41,7 +40,6 @@ interface BalanceData {
 
 const menuItems = [
   { href: '/', label: '订单管理', icon: Package },
-  { href: '/products', label: '商品管理', icon: ShoppingCart },
   { href: '/wallet', label: '我的钱包', icon: Wallet },
 ];
 

@@ -10,8 +10,8 @@ const port = parseInt(process.env.PORT || '5000', 10);
 const app = next({ dev, hostname, port, webpack: true });
 const handle = app.getRequestHandler();
 
-// 订单同步采用按需拉取模式：用户在订单页查询/点击「同步订单」时
-// 通过 POST /api/orders/sync 实时调方果 API 拉取（见 src/lib/fangguo-sync.ts）
+// 订单不落库：订单查询实时透传方果 API（见 src/lib/fangguo-live.ts），
+// 本地仅落库用户/余额/流水/推单记录/店铺分配
 
 app.prepare().then(() => {
   const server = createServer(async (req, res) => {

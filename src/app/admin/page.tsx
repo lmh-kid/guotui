@@ -38,8 +38,6 @@ import {
 } from '@/components/ui/pagination';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
-  Users,
-  Wallet,
   ArrowUpCircle,
   ArrowDownCircle,
   Search,
@@ -50,7 +48,8 @@ import {
   UserPlus,
   Link2,
   Store,
-  CloudDownload,
+  CalendarDays,
+  Send,
   KeyRound,
 } from 'lucide-react';
 import {
@@ -96,6 +95,23 @@ interface FangguoShopRow {
   assignedUserId: string | null;
 }
 
+interface PushRecordRow {
+  user_id: string;
+  email: string;
+  push_date: string;
+  total_count: number;
+  unsettled_count: number;
+  amount: number;
+  unsettled_amount: number;
+}
+
+interface PushSummary {
+  totalCount: number;
+  unsettledCount: number;
+  totalAmount: number;
+  unsettledAmount: number;
+}
+
 export default function AdminPage() {
   const router = useRouter();
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
@@ -134,7 +150,12 @@ export default function AdminPage() {
   const [fgKeySaving, setFgKeySaving] = useState(false);
   const [fgShops, setFgShops] = useState<FangguoShopRow[]>([]);
   const [fgShopsLoading, setFgShopsLoading] = useState(false);
-  const [fgSyncing, setFgSyncing] = useState(false);
+
+  // 推单日账单
+  const [pushRecords, setPushRecords] = useState<PushRecordRow[]>([]);
+  const [pushSummary, setPushSummary] = useState<PushSummary | null>(null);
+  const [prLoading, setPrLoading] = useState(false);
+  const [prDays, setPrDays] = useState(7);
 
   // 检查管理员权限
   useEffect(() => {
@@ -343,32 +364,30 @@ export default function AdminPage() {
     }
   };
 
-  const handleManualSync = async () => {
-    setFgSyncing(true);
+  const loadPushRecords = useCallback(async (days = 7) => {
+    setPrLoading(true);
     try {
-      const res = await apiRequest<{
-        message?: string;
-        stats?: { fetched?: number; inserted?: number; updated?: number; unassigned?: number };
-      }>('/api/admin/fangguo/sync', {
-        method: 'POST',
-        body: JSON.stringify({ days: 1 }),
-      });
-      const r = res.stats || {};
-      toast.success(
-        `同步完成：拉取 ${r.fetched ?? 0} 单，新增 ${r.inserted ?? 0}，更新 ${r.updated ?? 0}，未分配 ${r.unassigned ?? 0}`
+      const res = await apiRequest<{ list: PushRecordRow[]; summary: PushSummary }>(
+        `/api/admin/push-records?days=${days}`
       );
-      // 同步后刷新用户列表（订单数可能变化）——刷新店铺分配状态即可
-      await loadFangguoShops();
+      setPushRecords(res.list || []);
+      setPushSummary(res.summary || null);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '同步失败');
+      toast.error(err instanceof Error ? err.message : '加载推单记录失败');
     } finally {
-      setFgSyncing(false);
+      setPrLoading(false);
     }
-  };
+  }, []);
 
   const refreshFangguo = async () => {
     await Promise.all([loadFangguoConfig(), loadFangguoShops()]);
   };
+
+  useEffect(() => {
+    if (isAdmin) {
+      loadPushRecords(7);
+    }
+  }, [isAdmin, loadPushRecords]);
 
   if (loading) {
     return (
@@ -409,6 +428,7 @@ export default function AdminPage() {
           <TabsList>
             <TabsTrigger value="users">用户管理</TabsTrigger>
             <TabsTrigger value="transactions">流水记录</TabsTrigger>
+            <TabsTrigger value="push-records">推单记录</TabsTrigger>
             <TabsTrigger value="fangguo">平台对接</TabsTrigger>
           </TabsList>
 
@@ -633,6 +653,96 @@ export default function AdminPage() {
             </Card>
           </TabsContent>
 
+          {/* 推单记录 Tab */}
+          <TabsContent value="push-records" className="space-y-4">
+            <div className="flex items-center gap-3 flex-wrap">
+              <div className="flex items-center gap-1 border border-gray-200 rounded-md p-1">
+                <CalendarDays className="w-4 h-4 text-gray-400 ml-1.5" />
+                {[7, 14, 31].map((d) => (
+                  <button
+                    key={d}
+                    onClick={() => {
+                      setPrDays(d);
+                      loadPushRecords(d);
+                    }}
+                    className={`px-3 py-1 text-sm rounded transition-colors ${
+                      prDays === d ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-100'
+                    }`}
+                  >
+                    近{d}天
+                  </button>
+                ))}
+              </div>
+              <Button variant="outline" size="sm" onClick={() => loadPushRecords(prDays)} disabled={prLoading}>
+                <RefreshCw className={`w-4 h-4 mr-2 ${prLoading ? 'animate-spin' : ''}`} />
+                刷新
+              </Button>
+              {pushSummary && (
+                <div className="text-sm text-gray-500 ml-auto flex gap-6">
+                  <span>
+                    推单合计 <span className="font-semibold text-gray-900">{pushSummary.totalCount} 单</span>
+                  </span>
+                  <span>
+                    金额合计 <span className="font-semibold text-gray-900">¥{pushSummary.totalAmount.toFixed(2)}</span>
+                  </span>
+                  <span>
+                    未结算 <span className="font-semibold text-amber-600">¥{pushSummary.unsettledAmount.toFixed(2)}</span>
+                    <span className="text-xs text-gray-400">（{pushSummary.unsettledCount} 单，次日自动结算）</span>
+                  </span>
+                </div>
+              )}
+            </div>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Send className="w-4 h-4 text-blue-600" />
+                  推单日账单（按用户 × 日期，¥0.50/单）
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {prLoading ? (
+                  <div className="flex items-center justify-center h-32">
+                    <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+                  </div>
+                ) : pushRecords.length === 0 ? (
+                  <p className="text-center text-gray-500 py-8">近 {prDays} 天暂无推单记录</p>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>日期</TableHead>
+                        <TableHead>用户</TableHead>
+                        <TableHead className="text-right">推单数</TableHead>
+                        <TableHead className="text-right">金额</TableHead>
+                        <TableHead>结算状态</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {pushRecords.map((r) => (
+                        <TableRow key={`${r.user_id}-${r.push_date}`}>
+                          <TableCell className="text-gray-700">{r.push_date}</TableCell>
+                          <TableCell className="font-medium">{r.email}</TableCell>
+                          <TableCell className="text-right">{r.total_count} 单</TableCell>
+                          <TableCell className="text-right font-semibold">¥{r.amount.toFixed(2)}</TableCell>
+                          <TableCell>
+                            {r.unsettled_count > 0 ? (
+                              <Badge className="bg-amber-100 text-amber-700">
+                                未结算 {r.unsettled_count} 单（¥{r.unsettled_amount.toFixed(2)}）
+                              </Badge>
+                            ) : (
+                              <Badge className="bg-green-100 text-green-700">已结算</Badge>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
           {/* 平台对接 Tab */}
           <TabsContent value="fangguo" className="space-y-4">
             {/* API KEY 配置 */}
@@ -684,30 +794,7 @@ export default function AdminPage() {
                   </Button>
                 </div>
                 <p className="text-xs text-gray-400">
-                  保存时会先验证 KEY 有效性（调用方果店铺接口），验证通过后系统每 10 分钟自动同步订单
-                </p>
-              </CardContent>
-            </Card>
-
-            {/* 手动同步 */}
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
-                <CardTitle className="text-base flex items-center gap-2">
-                  <CloudDownload className="w-4 h-4 text-blue-600" />
-                  订单同步
-                </CardTitle>
-                <Button onClick={handleManualSync} disabled={fgSyncing || !fgConfig?.configured}>
-                  {fgSyncing ? (
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  ) : (
-                    <RefreshCw className="w-4 h-4 mr-2" />
-                  )}
-                  立即同步（近1天）
-                </Button>
-              </CardHeader>
-              <CardContent>
-                <p className="text-xs text-gray-500">
-                  系统每 10 分钟自动拉取方果新订单并按店铺分配给对应用户；点击按钮可立即同步最近 1 天的订单
+                  保存时会先验证 KEY 有效性（调用方果店铺接口）。订单不落库：用户查询订单时实时调方果 API，按分配店铺过滤展示
                 </p>
               </CardContent>
             </Card>

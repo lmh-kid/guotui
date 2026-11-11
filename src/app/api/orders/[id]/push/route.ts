@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getCurrentUser, ensureUserBalance } from "@/lib/auth-utils";
-import { getSupabaseClient } from "@/storage/database/supabase-client";
-import { pushFangguoOrders, FangguoApiError } from "@/lib/fangguo";
-import { chargeUser, PUSH_FEE } from "@/lib/billing";
+import { getCurrentUser } from "@/lib/auth-utils";
+import { pushFangguoOrders, fetchFangguoOrderDetail, FangguoApiError } from "@/lib/fangguo";
+import { settleUser, getPushBillingStats, recordPushes, getUserShopNames } from "@/lib/push-billing";
+import { PUSH_FEE } from "@/lib/billing";
 
 /**
- * 单条订单推单（真实调方果 API）
- * 流程: 校验状态 → 调方果 /order/push → 成功后扣费 → 更新状态
+ * 单条订单推单（实时透传，订单不落库）
+ * 路由参数 id = 方果平台订单号 tid
+ *
+ * 流程: 惰性日结算 → 负余额禁推 → 实时校验归属/状态 → 配额预检 → 方果推单 → 记录 push_records
  */
 export async function POST(
   req: NextRequest,
@@ -19,30 +21,34 @@ export async function POST(
     return NextResponse.json({ error: authError || "认证失败" }, { status: 401 });
   }
 
-  const client = getSupabaseClient(token ?? undefined);
-  const { id } = await params;
+  const { id: tid } = await params;
 
   try {
-    await ensureUserBalance(user.id, client);
+    // 1. 惰性日结算
+    await settleUser(user.id);
 
-    // 1. 查询订单
-    const { data: order, error: orderError } = await client
-      .from("orders")
-      .select("id, order_no, sys_tid, status, decode_status, df_status, store_name")
-      .eq("id", id)
-      .eq("user_id", user.id)
-      .single();
-
-    if (orderError || !order) {
-      return NextResponse.json({ error: "订单不存在" }, { status: 404 });
+    // 2. 计费状态
+    const billing = await getPushBillingStats(user.id);
+    if (billing.blocked) {
+      return NextResponse.json(
+        { error: `余额为负（¥${billing.balance.toFixed(2)}），请联系管理员补调后再推单` },
+        { status: 403 }
+      );
     }
 
-    // 2. 状态检查：已推送/生产中/已发货不可推
-    if (["pushed", "production", "shipped"].includes(order.status)) {
-      return NextResponse.json({ error: "订单已推送，无需重复推送" }, { status: 400 });
+    // 3. 店铺归属
+    const shopNames = await getUserShopNames(user.id);
+    if (shopNames.length === 0) {
+      return NextResponse.json({ error: "您暂未分配店铺，请联系管理员" }, { status: 403 });
     }
-    // 方果侧状态: 仅 dfStatus=1(待推送) 可推
-    if (order.df_status != null && order.df_status !== 1) {
+
+    // 4. 实时拉取订单详情校验
+    const detail = await fetchFangguoOrderDetail(tid);
+    if (!shopNames.includes(detail.storeName ?? "")) {
+      return NextResponse.json({ error: "订单不存在或不属于您的店铺" }, { status: 404 });
+    }
+
+    if (detail.dfStatus !== 1) {
       const statusText: Record<number, string> = {
         0: "待整理",
         1: "待推送",
@@ -52,69 +58,43 @@ export async function POST(
         5: "已打包",
       };
       return NextResponse.json(
-        { error: `方果侧订单状态为「${statusText[order.df_status] ?? order.df_status}」，仅「待推送」状态可推送` },
+        { error: `方果侧订单状态为「${statusText[detail.dfStatus] ?? detail.dfStatus}」，仅「待推送」状态可推送` },
         { status: 400 }
       );
     }
 
-    // 3. 余额预检查（避免推送成功但扣费失败）
-    const adminClient = getSupabaseClient();
-    const { data: balanceData } = await adminClient
-      .from("user_balances")
-      .select("balance")
-      .eq("user_id", user.id)
-      .single();
-    const balanceNow = parseFloat((balanceData?.balance as string) ?? "0");
-    if (balanceNow < PUSH_FEE) {
+    // 5. 配额预检
+    if (billing.availableQuota < 1) {
       return NextResponse.json(
-        { error: `余额不足（当前 ${balanceNow.toFixed(2)} 元，推单需 ${PUSH_FEE.toFixed(2)} 元），请先充值` },
+        {
+          error: `今日可推单数已用尽（余额 ¥${billing.balance.toFixed(2)}，今日已推 ${billing.todayPushed} 单未结算 ¥${billing.unsettledAmount.toFixed(2)}），请充值或明日结算后再推`,
+        },
         { status: 400 }
       );
     }
 
-    // 4. 调方果真实推单
+    // 6. 调方果推单
     try {
-      await pushFangguoOrders([order.order_no]);
+      await pushFangguoOrders([tid]);
     } catch (e) {
       const msg = e instanceof FangguoApiError ? e.message : "方果推单接口调用失败";
       return NextResponse.json({ error: `方果推单失败: ${msg}` }, { status: 400 });
     }
 
-    // 5. 推单成功 → 扣费
-    const charge = await chargeUser(
-      user.id,
-      PUSH_FEE,
-      `推单扣费 ${order.order_no}`,
-      order.order_no
-    );
-    if (!charge.success) {
-      // 推单已成功但扣费失败：记录日志（理论上余额检查前置可避免）
-      console.error("[push] charge failed after fangguo push success:", order.order_no, charge.error);
-      return NextResponse.json(
-        { error: `订单已推送至方果，但扣费失败（${charge.error}），请联系管理员核对` },
-        { status: 500 }
-      );
-    }
+    // 7. 记录推单（日结算依据）
+    await recordPushes(user.id, [tid]);
 
-    // 6. 更新订单状态
-    const { error: updateOrderError } = await client
-      .from("orders")
-      .update({
-        status: "pushed",
-        df_status: 3, // 工厂待审
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", id)
-      .eq("user_id", user.id);
-
-    if (updateOrderError) throw updateOrderError;
+    const newBilling = await getPushBillingStats(user.id);
 
     return NextResponse.json({
       success: true,
-      message: "推单成功，订单已推送至工厂待审核",
-      balance: charge.balance,
+      message: `推单成功（今日已推 ${newBilling.todayPushed} 单，费用 ¥${(newBilling.todayPushed * PUSH_FEE).toFixed(2)} 将于次日结算）`,
+      billing: newBilling,
     });
   } catch (err: unknown) {
+    if (err instanceof FangguoApiError) {
+      return NextResponse.json({ error: err.message }, { status: 502 });
+    }
     const message = err instanceof Error ? err.message : "推单失败";
     return NextResponse.json({ error: message }, { status: 500 });
   }

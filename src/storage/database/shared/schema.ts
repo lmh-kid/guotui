@@ -142,7 +142,31 @@ export const products = pgTable(
   ]
 );
 
-// 订单表
+// 推单记录表（订单不落库架构下唯一的推单凭据，日结算账依据）
+// UNIQUE(user_id, order_no) 保证同一订单不重复计费
+export const pushRecords = pgTable(
+  "push_records",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    user_id: uuid("user_id").notNull(),
+    order_no: varchar("order_no", { length: 64 }).notNull(), // 方果平台订单号 tid
+    push_date: varchar("push_date", { length: 10 }).notNull(), // 推单日期 YYYY-MM-DD（本地时区）
+    fee_applied: boolean("fee_applied").notNull().default(false), // 是否已日结算扣费
+    settled_at: timestamp("settled_at", { withTimezone: true }),
+    created_at: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index("push_records_user_date_idx").on(
+      table.user_id,
+      table.push_date,
+      table.fee_applied
+    ),
+  ]
+);
+
+// 订单表（历史遗留：新架构订单不落库、实时透传方果 API，本表已停用，仅保留历史数据）
 export const orders = pgTable(
   "orders",
   {

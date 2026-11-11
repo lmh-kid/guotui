@@ -1,12 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getCurrentUser, ensureUserBalance } from "@/lib/auth-utils";
-import { getSupabaseClient } from "@/storage/database/supabase-client";
-import { pushFangguoOrders, FangguoApiError } from "@/lib/fangguo";
-import { chargeUser, PUSH_FEE } from "@/lib/billing";
+import { getCurrentUser } from "@/lib/auth-utils";
+import {
+  pushFangguoOrders,
+  fetchFangguoOrderDetail,
+  FangguoApiError,
+} from "@/lib/fangguo";
+import {
+  settleUser,
+  getPushBillingStats,
+  recordPushes,
+  getUserShopNames,
+} from "@/lib/push-billing";
+import { PUSH_FEE } from "@/lib/billing";
 
 /**
- * 批量订单推单（真实调方果 API）
- * 流程: 过滤可推订单 → 批量调方果 /order/push → 按实际成功数扣费 → 更新状态
+ * 批量订单推单（实时透传，订单不落库）
+ * Body: { order_nos: string[] }  （方果平台订单号 tid 数组）
+ *
+ * 流程: 惰性日结算 → 负余额禁推 → 实时校验归属/状态 → 配额预检 → 方果批量推单 → 记录 push_records
  */
 export async function POST(req: NextRequest) {
   const token = req.headers.get("x-session");
@@ -18,99 +29,99 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { order_ids } = body as { order_ids: string[] };
+    const { order_nos } = body as { order_nos: string[] };
 
-    if (!order_ids || order_ids.length === 0) {
+    if (!Array.isArray(order_nos) || order_nos.length === 0) {
       return NextResponse.json({ error: "请选择要推送的订单" }, { status: 400 });
     }
 
-    const client = getSupabaseClient(token ?? undefined);
-    await ensureUserBalance(user.id, client);
+    // 1. 惰性日结算
+    await settleUser(user.id);
 
-    // 查询订单
-    const { data: orders, error: ordersError } = await client
-      .from("orders")
-      .select("id, order_no, status, df_status")
-      .in("id", order_ids)
-      .eq("user_id", user.id);
-
-    if (ordersError) throw ordersError;
-
-    // 过滤可推送订单: 非 pushed/production/shipped，且方果状态为待推送(1)或未知(兼容手工单)
-    const pushableOrders =
-      orders?.filter((o) => {
-        if (["pushed", "production", "shipped"].includes(o.status)) return false;
-        if (o.df_status != null && o.df_status !== 1) return false;
-        return true;
-      }) || [];
-
-    if (pushableOrders.length === 0) {
+    // 2. 计费状态
+    const billing = await getPushBillingStats(user.id);
+    if (billing.blocked) {
       return NextResponse.json(
-        { error: "没有可推送的订单（仅方果「待推送」状态可推）" },
+        { error: `余额为负（¥${billing.balance.toFixed(2)}），请联系管理员补调后再推单` },
+        { status: 403 }
+      );
+    }
+
+    // 3. 店铺归属
+    const shopNames = await getUserShopNames(user.id);
+    if (shopNames.length === 0) {
+      return NextResponse.json({ error: "您暂未分配店铺，请联系管理员" }, { status: 403 });
+    }
+    const shopSet = new Set(shopNames);
+
+    // 4. 逐单实时校验（并发）
+    const details = await Promise.allSettled(
+      order_nos.map((tid) => fetchFangguoOrderDetail(tid))
+    );
+
+    const pushable: string[] = [];
+    let skipped = 0;
+    const notOwned: string[] = [];
+
+    for (const d of details) {
+      if (d.status !== "fulfilled") {
+        skipped += 1; // 详情拉取失败
+        continue;
+      }
+      const detail = d.value;
+      if (!shopSet.has(detail.storeName ?? "")) {
+        notOwned.push(detail.tid);
+        continue;
+      }
+      if (detail.dfStatus === 1) {
+        pushable.push(detail.tid);
+      } else {
+        skipped += 1;
+      }
+    }
+
+    if (pushable.length === 0) {
+      return NextResponse.json(
+        { error: `没有可推送的订单（仅方果「待推送」状态可推，跳过 ${skipped} 单）` },
         { status: 400 }
       );
     }
 
-    // 余额预检查
-    const totalFee = pushableOrders.length * PUSH_FEE;
-    const adminClient = getSupabaseClient();
-    const { data: balanceData } = await adminClient
-      .from("user_balances")
-      .select("balance")
-      .eq("user_id", user.id)
-      .single();
-    const balance = parseFloat((balanceData?.balance as string) ?? "0");
-    if (balance < totalFee) {
+    // 5. 配额预检
+    if (billing.availableQuota < pushable.length) {
       return NextResponse.json(
-        { error: `余额不足，需 ${totalFee.toFixed(2)} 元（${pushableOrders.length} 单），当前 ${balance.toFixed(2)} 元` },
+        {
+          error: `余额仅可再推 ${billing.availableQuota} 单（余额 ¥${billing.balance.toFixed(2)}，今日已推 ${billing.todayUnsettled} 单未结算），本次选择 ${pushable.length} 单，请减少单量或充值`,
+        },
         { status: 400 }
       );
     }
 
-    // 调方果批量推单
+    // 6. 调方果批量推单
     try {
-      await pushFangguoOrders(pushableOrders.map((o) => o.order_no));
+      await pushFangguoOrders(pushable);
     } catch (e) {
       const msg = e instanceof FangguoApiError ? e.message : "方果推单接口调用失败";
       return NextResponse.json({ error: `方果推单失败: ${msg}` }, { status: 400 });
     }
 
-    // 方果成功后统一扣费
-    const charge = await chargeUser(
-      user.id,
-      totalFee,
-      `批量推单扣费 x${pushableOrders.length}`,
-    );
-    if (!charge.success) {
-      console.error("[batch-push] charge failed after fangguo success:", charge.error);
-      return NextResponse.json(
-        { error: `订单已推送至方果，但扣费失败（${charge.error}），请联系管理员核对` },
-        { status: 500 }
-      );
-    }
+    // 7. 记录推单（日结算依据）
+    const recorded = await recordPushes(user.id, pushable);
 
-    // 更新订单状态
-    const pushableIds = pushableOrders.map((o) => o.id);
-    const { error: updateOrderError } = await client
-      .from("orders")
-      .update({
-        status: "pushed",
-        df_status: 3, // 工厂待审
-        updated_at: new Date().toISOString(),
-      })
-      .in("id", pushableIds)
-      .eq("user_id", user.id);
-
-    if (updateOrderError) throw updateOrderError;
+    const newBilling = await getPushBillingStats(user.id);
 
     return NextResponse.json({
       success: true,
-      message: `成功推送 ${pushableOrders.length} 个订单至工厂`,
-      balance: charge.balance,
-      pushedCount: pushableOrders.length,
-      skippedCount: (orders?.length || 0) - pushableOrders.length,
+      message: `成功推送 ${pushable.length} 单（费用 ¥${(pushable.length * PUSH_FEE).toFixed(2)} 将于次日日结算；今日已推 ${newBilling.todayPushed} 单）`,
+      pushedCount: pushable.length,
+      recordedCount: recorded,
+      skippedCount: skipped,
+      billing: newBilling,
     });
   } catch (err: unknown) {
+    if (err instanceof FangguoApiError) {
+      return NextResponse.json({ error: err.message }, { status: 502 });
+    }
     const message = err instanceof Error ? err.message : "批量推单失败";
     return NextResponse.json({ error: message }, { status: 500 });
   }
