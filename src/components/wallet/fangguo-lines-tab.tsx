@@ -55,8 +55,9 @@ export default function FangguoLinesTab() {
       const json = (await res.json()) as { list?: OrderRow[]; summary?: Summary };
       setRows(json.list ?? []);
       setSummary(json.summary ?? null);
-    } catch {
-      toast.error('查询资金明细失败');
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '';
+      toast.error(msg && msg !== 'Failed to fetch' ? `查询资金明细失败：${msg}` : '查询资金明细失败');
     } finally {
       setLoading(false);
     }
@@ -87,8 +88,9 @@ export default function FangguoLinesTab() {
       );
       await load(days);
       window.dispatchEvent(new Event('balance-updated'));
-    } catch {
-      toast.error('手动结算失败');
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '';
+      toast.error(msg && msg !== 'Failed to fetch' ? `手动结算失败：${msg}` : '手动结算失败');
     } finally {
       setSettling(false);
     }

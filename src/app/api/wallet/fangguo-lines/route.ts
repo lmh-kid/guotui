@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-utils';
 import { getSupabaseAdminClient } from '@/storage/database/supabase-client';
 import { shanghaiDateStr } from '@/lib/daily-settlement';
+import { getUserShopNames } from '@/lib/push-billing';
 import { PUSH_FEE } from '@/lib/billing';
 
 /**
@@ -20,7 +21,7 @@ import { PUSH_FEE } from '@/lib/billing';
  */
 interface OrderRow {
   order_no: string; // 订单号（方果 tid；充值等无订单流水为空）
-  time: string; // 计费时间（该订单最近一次流水时间）
+  time: string; // 计费时间（该订单最近一次流水时间，统一 UTC ISO）
   store_name: string | null;
   recharge: number;
   material: number;
@@ -32,6 +33,9 @@ interface OrderRow {
   total: number; // 合计 = 材料费 + 运费 - 退回 + 手动扣费
   has_push: boolean;
 }
+
+// 时间统一转 UTC ISO（流水为 UTC ISO、推单 created_at 为 +08:00 带纳秒格式，直接字符串比较会错序）
+const iso = (t?: string | null): string => (t ? new Date(t).toISOString() : '');
 
 export async function GET(req: NextRequest) {
   const token = req.headers.get('x-session');
@@ -47,6 +51,18 @@ export async function GET(req: NextRequest) {
   try {
     const supabase = await getSupabaseAdminClient();
     const since = shanghaiDateStr(Date.now() - (days - 1) * 86400_000);
+
+    // 0. 补归属：店铺刚分配时，历史同步的流水 user_id 仍为空，
+    //    这里把「店铺名属于本用户但未归属」的流水就地补填（幂等，只填空不覆盖），
+    //    避免等下一次日结同步才能看到数据
+    const myShops = await getUserShopNames(user.id);
+    if (myShops.length > 0) {
+      await supabase
+        .from('fangguo_transactions')
+        .update({ user_id: user.id })
+        .is('user_id', null)
+        .in('store_name', myShops);
+    }
 
     // 1. 方果流水（本用户）
     const { data: lines, error: linesErr } = await supabase
@@ -76,7 +92,7 @@ export async function GET(req: NextRequest) {
       if (!r) {
         r = {
           order_no: key,
-          time,
+          time: iso(time),
           store_name: store,
           recharge: 0,
           material: 0,
@@ -98,7 +114,7 @@ export async function GET(req: NextRequest) {
       const abs = Math.abs(amount);
       const name = String(l.fee_name_type ?? '');
       const kind = String(l.kind);
-      const time = l.transaction_time;
+      const t = iso(l.transaction_time);
       const store = l.store_name ?? null;
       const tid = l.tid && String(l.tid).length > 0 ? String(l.tid) : null;
 
@@ -106,7 +122,7 @@ export async function GET(req: NextRequest) {
         // 充值等无订单流水：独立一行
         const row: OrderRow = {
           order_no: '',
-          time,
+          time: t,
           store_name: store,
           recharge: kind === 'exclude' ? amount : 0,
           material: 0,
@@ -126,8 +142,8 @@ export async function GET(req: NextRequest) {
         continue;
       }
 
-      const row = getRow(tid, time, store);
-      if (time > row.time) row.time = time; // 计费时间取最近一笔
+      const row = getRow(tid, t, store);
+      if (t > row.time) row.time = t; // 计费时间取最近一笔
 
       if (kind === 'charge') {
         if (name.includes('材料')) row.material += abs;
@@ -142,14 +158,13 @@ export async function GET(req: NextRequest) {
     }
 
     // 4. 手动扣费：每笔推单 ¥0.50 并入对应订单行（仅展示）
-    const pushedSet = new Set<string>();
     for (const p of pushes ?? []) {
       const key = String(p.order_no);
-      pushedSet.add(key);
-      const row = getRow(key, p.created_at, null);
+      const t = iso(p.created_at);
+      const row = getRow(key, t, null);
       row.manual = PUSH_FEE;
       row.has_push = true;
-      if (p.created_at > row.time) row.time = p.created_at;
+      if (t > row.time) row.time = t;
     }
 
     // 5. 合计
