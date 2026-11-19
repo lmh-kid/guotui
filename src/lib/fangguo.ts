@@ -254,8 +254,6 @@ export interface FactoryCodeOptions {
   pics: string[];
   /** 材质 → 该材质下出现过的型号（商品库 SKU 组合聚合，型号与材质联动） */
   modelsByMaterial: Record<string, string[]>;
-  /** 图号 → 方果商品主图 URL（商品库 goodsPic 聚合，未匹配到商品的图号无此映射） */
-  picImages: Record<string, string>;
 }
 
 // 材质颜色缓存（10 分钟，按工厂）
@@ -332,7 +330,7 @@ export function warmFactoryModelPicOptions(): void {
 async function aggregateGoodsOptions(): Promise<Map<number, FactoryCodeOptions>> {
   const byFactory = new Map<
     number,
-    { models: Set<string>; pics: Set<string>; modelsByMaterial: Map<string, Set<string>>; picImages: Map<string, string> }
+    { models: Set<string>; pics: Set<string>; modelsByMaterial: Map<string, Set<string>> }
   >();
   const now = Date.now();
   const day = 86400_000;
@@ -348,7 +346,7 @@ async function aggregateGoodsOptions(): Promise<Map<number, FactoryCodeOptions>>
         let pageNo = 1;
         // 每个窗口最多拉 20 页（2000 商品），防止极端情况拖垮请求
         while (pageNo <= 20) {
-          const page = await callApi<{ list?: Array<{ id?: string; goodsOriginId?: string; goodsPic?: string; skus?: FangguoGoodsPageSku[] }> }>(
+          const page = await callApi<{ list?: Array<{ id?: string; goodsOriginId?: string; skus?: FangguoGoodsPageSku[] }> }>(
             "POST",
             "/warehouse/shop/goods/page",
             { body: { pageNo, pageSize: 100, sjbmUpdateStartTime: start, sjbmUpdateEndTime: end } }
@@ -364,15 +362,11 @@ async function aggregateGoodsOptions(): Promise<Map<number, FactoryCodeOptions>>
               if (fid == null) continue;
               let bucket = byFactory.get(fid);
               if (!bucket) {
-                bucket = { models: new Set(), pics: new Set(), modelsByMaterial: new Map(), picImages: new Map() };
+                bucket = { models: new Set(), pics: new Set(), modelsByMaterial: new Map() };
                 byFactory.set(fid, bucket);
               }
               if (sku.shopModelCode) bucket.models.add(sku.shopModelCode);
               if (sku.shopPicCode) bucket.pics.add(sku.shopPicCode);
-              // 图号 → 商品主图（方果图片展示：图号未匹配到商品时无映射）
-              if (sku.shopPicCode && goods.goodsPic && !bucket.picImages.has(sku.shopPicCode)) {
-                bucket.picImages.set(sku.shopPicCode, goods.goodsPic);
-              }
               // 材质→型号组合（型号与材质联动数据源）
               if (sku.shopMaterialCode && sku.shopModelCode) {
                 let scoped = bucket.modelsByMaterial.get(sku.shopMaterialCode);
@@ -402,7 +396,6 @@ async function aggregateGoodsOptions(): Promise<Map<number, FactoryCodeOptions>>
       models: Array.from(bucket.models).sort(),
       pics: Array.from(bucket.pics).sort(),
       modelsByMaterial,
-      picImages: Object.fromEntries(bucket.picImages),
     });
   }
 

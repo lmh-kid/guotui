@@ -32,7 +32,6 @@ interface EditableItem {
   title: string;
   spec: string | null;
   image: string | null;
-  printUrl: string | null; // 打印图（生产图）地址：取 diyList[].workUrl 首个非空
   currentSku: string | null; // 现有商家编码（如 90克磨毛布被套三件套-混合色-220X230-28810029）
   materialCode: string | null;
   colorCode: string | null;
@@ -122,7 +121,6 @@ export async function GET(
     let models: string[] = [];
     let pics: string[] = [];
     let modelsByMaterial: Record<string, string[]> = {};
-    let picImages: Record<string, string> = {};
     let optionsReady = true;
     if (factoryId != null) {
       const [materialList, goodsOptions] = await Promise.all([
@@ -135,7 +133,6 @@ export async function GET(
         models = opts.models;
         pics = opts.pics;
         modelsByMaterial = opts.modelsByMaterial || {};
-        picImages = opts.picImages || {};
       } else {
         optionsReady = false; // 首次访问商品库聚合尚未完成，型号/图号先手填
       }
@@ -149,7 +146,6 @@ export async function GET(
       title: it.title,
       spec: it.skuPropertiesName ?? null,
       image: it.merchandisePicPath || null,
-      printUrl: (it.diyList ?? []).map((d) => d.workUrl).find((u) => !!u) ?? null,
       currentSku: it.shopMappingSku || null,
       materialCode: it.materialCode ?? null,
       colorCode: it.colorCode ?? null,
@@ -166,7 +162,7 @@ export async function GET(
         dfStatus: detail.dfStatus,
       },
       items,
-      options: { materials, models, pics, modelsByMaterial, picImages },
+      options: { materials, models, pics, modelsByMaterial },
       optionsReady,
     });
   } catch (err: unknown) {
