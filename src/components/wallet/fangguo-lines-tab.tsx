@@ -9,9 +9,9 @@ import { toast } from 'sonner';
 
 /**
  * 资金明细（按订单号聚合，布局对齐方果后台）
- * 一个订单一行：材料费 / 运费 / 手动扣费(推单服务费) / 材料退回 / 运费退回
- * 手动扣费为展示层合成（¥0.50/单），不入库；预扣冻结不计入合计
- * 默认展示当天，可切换近 3/7/30 天
+ * 一个订单一行：材料费 / 运费 / 手动扣费(推单服务费 ¥0.50/单) / 材料退回 / 运费退回
+ * 材料费不分 feeType：有实扣取实扣、未发货回退预扣，退费冲抵
+ * 合计 = 材料费 + 运费 + 手动扣费；默认展示当天，可切换近 3/7/30 天
  */
 
 interface OrderRow {
@@ -24,9 +24,7 @@ interface OrderRow {
   manual: number;
   material_refund: number;
   freight_refund: number;
-  prehold: number;
   total: number;
-  has_push: boolean;
 }
 
 interface Summary {
@@ -162,7 +160,6 @@ export default function FangguoLinesTab() {
                 <th className="text-right">手动扣费</th>
                 <th className="text-right">材料退回</th>
                 <th className="text-right">运费退回</th>
-                <th className="text-right">预扣冻结</th>
                 <th className="text-right">合计</th>
               </tr>
             </thead>
@@ -181,7 +178,6 @@ export default function FangguoLinesTab() {
                   <Cell v={r.manual} highlight />
                   <Cell v={r.material_refund} refund />
                   <Cell v={r.freight_refund} refund />
-                  <Cell v={r.prehold} muted />
                   <td
                     className={`whitespace-nowrap text-right font-semibold ${
                       r.total < 0 ? 'text-green-600' : r.total > 0 ? 'text-gray-900' : 'text-gray-400'
@@ -193,7 +189,7 @@ export default function FangguoLinesTab() {
               ))}
               {!loading && rows.length === 0 && (
                 <tr>
-                  <td colSpan={11} className="py-8 text-center text-sm text-gray-400">
+                  <td colSpan={10} className="py-8 text-center text-sm text-gray-400">
                     {days === 1 ? '今天暂无资金明细' : `近 ${days} 天暂无资金明细`}
                   </td>
                 </tr>
@@ -207,7 +203,7 @@ export default function FangguoLinesTab() {
           </div>
         )}
         <p className="mt-2 text-xs text-gray-400">
-          手动扣费 ¥0.50/单为推单服务费，仅展示不入库，实际扣款在每日结算统一计入；预扣冻结为推送时材料费暂扣，发货实扣后自动转正，不计入合计
+          材料费在订单推送时按预扣展示、发货后按实扣更新，退费自动冲抵；手动扣费 ¥0.50/单为推单服务费，仅展示不入库，实际扣款在每日结算统一计入
         </p>
       </CardContent>
     </Card>
@@ -219,13 +215,11 @@ function Cell({
   sign = false,
   refund = false,
   highlight = false,
-  muted = false,
 }: {
   v: number;
   sign?: boolean;
   refund?: boolean;
   highlight?: boolean;
-  muted?: boolean;
 }) {
   const abs = Math.abs(v);
   if (!v) return <td className="text-right text-xs text-gray-300">-</td>;
@@ -246,9 +240,10 @@ function Cell({
       <td className="whitespace-nowrap text-right text-xs font-semibold text-amber-600">¥{abs.toFixed(2)}</td>
     );
   }
-  if (muted) {
+  if (v < 0) {
+    // 净额为负（退回超过扣费）：按退回样式展示
     return (
-      <td className="whitespace-nowrap text-right text-xs text-gray-400">¥{abs.toFixed(2)}</td>
+      <td className="whitespace-nowrap text-right text-xs text-green-600">+¥{abs.toFixed(2)}</td>
     );
   }
   return <td className="whitespace-nowrap text-right text-xs text-gray-900">¥{abs.toFixed(2)}</td>;
