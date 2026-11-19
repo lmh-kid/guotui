@@ -121,6 +121,13 @@
   - `filterByShops(orders, shopNames)`：按 shops 表店铺名精确匹配 store_name
 - `src/lib/push-billing.ts` - 日结计费模块（settleUser / getPushBillingStats / recordPushes）
 
+**修改商家编码**（待整理/待推送订单，`/order/saveProduct`）：
+- `src/lib/fangguo.ts` 内封装：`getMaterialColors(factoryId)`（材质→颜色级联）、`getMerchantCodeOptions()`（型号/图号聚合）、`saveProduct()`
+- 型号/图号数据源：`warehouse/shop/goods/page` 商品库分页聚合（时间窗 ≤7 天，多窗口扫描），**6 小时全局缓存**（globalThis.__fgOptionsCache）；首次访问惰性加载，订单列表接口触发预热，`optionsReady` 标识是否就绪
+- 官方 `basic/models/v1` 接口探测 30+ 参数组合均报「缺少商家或工厂id」不可用（文档无参数示例），故型号选项改用商品库聚合替代
+- 保存后调 `refreshLiveOrder(tid)` 刷新实时缓存使改动即时生效
+- 前端：`src/components/merchant-code-dialog.tsx`（960px 弹窗，按 SKU 行编辑材质/颜色/型号/图号，材质→颜色级联，全部为可搜索下拉 `combo-select.tsx`）；仅 pending/decoded 状态显示入口
+
 **方果状态映射**（dfStatus: 0待整理 1待推送 2已反审 3工厂待审 4生产中 5已打包；deliverTime 有值→shipped）：
 - 0/2 → status=pending；1 → decoded；3 → pushed；4/5 → production
 - 推单校验：仅 df_status=1 可推，推送成功后置 df_status=3 并记录 push_records
@@ -155,6 +162,8 @@
 | POST | /api/wallet/recharge | 模拟充值 | 是 |
 | GET | /api/orders | 订单列表（实时透传；参数 page/pageSize/status/keyword/days=1\|3\|7） | 是 |
 | POST | /api/orders/[id]/push | 单条推单（id=方果tid；校验归属/df状态/配额） | 是 |
+| GET | /api/orders/[id]/merchant-code | 改码弹窗数据（订单SKU行 + 材质/颜色/型号/图号选项） | 是 |
+| POST | /api/orders/[id]/merchant-code | 保存商家编码（body: {items:[{id,materialCode,colorCode,modelCode,pictureCode}]}） | 是 |
 | POST | /api/orders/batch-push | 批量推单（body: {order_nos: string[]}） | 是 |
 | GET | /api/admin/check | 检查是否管理员 | 是 |
 | GET | /api/admin/users | 用户列表（含余额） | 管理员 |
