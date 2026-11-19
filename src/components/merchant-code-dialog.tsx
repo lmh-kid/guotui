@@ -276,7 +276,11 @@ export default function MerchantCodeDialog({ orderNo, onClose, onSuccess }: Merc
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="w-[calc(100vw-2rem)] sm:w-[960px] sm:max-w-[960px] max-h-[85vh] overflow-y-auto">
+      <DialogContent
+        className="w-[calc(100vw-2rem)] sm:w-[960px] sm:max-w-[960px] max-h-[85vh] overflow-y-auto"
+        onInteractOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+      >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 flex-wrap">
             修改商家编码

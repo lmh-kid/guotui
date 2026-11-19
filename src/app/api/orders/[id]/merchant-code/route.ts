@@ -246,16 +246,19 @@ export async function POST(
       modelCode,
       pictureCode,
       // 图片字段原值回传：saveProduct 是「商品/图片」全量保存接口，
-      // 不回传可能清空订单原有图片；原值透传保证改码不动图
+      // 不回传可能清空订单原有图片；原值透传保证改码不动图。
+      // diyList 过滤 effectUrl 为空的占位项（picName=默认），方果校验「效果图effectUrl不能为空」会拒绝原值回传
       additionalImg: it.additionalImg ?? undefined,
-      diyList:
-        (it.diyList ?? []).length > 0
-          ? (it.diyList ?? []).map((d) => ({
-              effectUrl: d.effectUrl ?? "",
-              sort: d.sort ?? 0,
-              workUrl: d.workUrl ?? "",
-            }))
-          : undefined,
+      diyList: (() => {
+        const valid = (it.diyList ?? [])
+          .filter((d) => !!d.effectUrl)
+          .map((d) => ({
+            effectUrl: d.effectUrl as string,
+            sort: d.sort ?? 0,
+            workUrl: d.workUrl ?? "",
+          }));
+        return valid.length > 0 ? valid : undefined;
+      })(),
     });
   }
 

@@ -138,9 +138,9 @@ export interface FangguoOrderItem {
   logisticsCompanyCode: string | null;
   logisticsOrderNum: string | null;
   diyList: Array<{
-    url: string;
-    workUrl: string;
-    effectUrl: string;
+    url: string | null;
+    workUrl: string | null;
+    effectUrl: string | null; // 实测占位项（picName=默认）为空串或 null，saveProduct 回传会报「效果图effectUrl不能为空」
     picName: string;
     sort: number;
   }>;
