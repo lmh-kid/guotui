@@ -52,6 +52,8 @@ interface MerchantCodeResponse {
     pics: string[];
     /** 材质 → 可选型号（商品库聚合，型号与材质联动） */
     modelsByMaterial?: Record<string, string[]>;
+    /** 图号 → 方果商品主图 URL（商品库聚合；图号未匹配到商品时无此键） */
+    picImages?: Record<string, string>;
   };
   /** false = 型号/图号选项尚在后台聚合（首次访问），前端可轮询刷新 */
   optionsReady?: boolean;
@@ -400,20 +402,20 @@ export default function MerchantCodeDialog({ orderNo, onClose, onSuccess }: Merc
                       />
                     </div>
 
-                    {/* 图片展示区域 */}
+                    {/* 图片展示区域：按图号查方果商品主图，未匹配不展示图片 */}
                     <div>
                       <label className="text-xs text-gray-500 mb-1 block">图片</label>
                       <div className="w-full h-[76px] rounded-md border border-gray-200 bg-gray-50 flex items-center justify-center overflow-hidden">
-                        {item.image ? (
+                        {draft.pictureCode && data?.options.picImages?.[draft.pictureCode] ? (
                           <img
-                            src={item.image}
-                            alt={item.title}
-                            title="点击查看大图"
+                            src={data.options.picImages[draft.pictureCode]}
+                            alt={draft.pictureCode}
+                            title={`图号 ${draft.pictureCode}（点击查看大图）`}
                             className="w-full h-full object-contain cursor-zoom-in hover:opacity-80 transition-opacity"
-                            onClick={() => window.open(item.image ?? '', '_blank')}
+                            onClick={() => window.open(data.options.picImages?.[draft.pictureCode] ?? '', '_blank')}
                           />
                         ) : (
-                          <span className="text-xs text-gray-400">暂无图片</span>
+                          <span className="text-xs text-gray-400">{draft.pictureCode ? '未匹配到图片' : '选图号后展示'}</span>
                         )}
                       </div>
                     </div>
