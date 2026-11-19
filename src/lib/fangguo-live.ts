@@ -163,20 +163,36 @@ export function filterByShops(orders: LiveOrder[], shopNames: string[]): LiveOrd
 /**
  * 刷新单条订单的实时缓存（修改商家编码等写操作后调用，免等 60s 缓存过期）
  * 重拉该订单 detail 并替换缓存中所有窗口内的旧数据
+ *
+ * @param expectDfStatus 期望的 dfStatus（推单后传 3=工厂待审）；拉到后若不匹配，说明方果侧异步落库延迟，延迟重试
  */
-export async function refreshLiveOrder(tid: string): Promise<LiveOrder | null> {
-  try {
-    const detail = await fetchFangguoOrderDetail(tid);
-    const fresh = mapDetailToLiveOrder(detail);
-    const cache = g.__fgLiveCache!;
-    for (const entry of cache.values()) {
-      const idx = entry.orders.findIndex((o) => o.order_no === tid);
-      if (idx >= 0) {
-        entry.orders[idx] = fresh;
+export async function refreshLiveOrder(
+  tid: string,
+  expectDfStatus?: number
+): Promise<LiveOrder | null> {
+  const maxAttempts = expectDfStatus != null ? 3 : 1;
+  let fresh: LiveOrder | null = null;
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const detail = await fetchFangguoOrderDetail(tid);
+      fresh = mapDetailToLiveOrder(detail);
+      if (expectDfStatus == null || fresh.df_status === expectDfStatus) {
+        break;
       }
+    } catch {
+      return null;
     }
-    return fresh;
-  } catch {
-    return null;
+    if (i < maxAttempts - 1) {
+      await new Promise((r) => setTimeout(r, 1500));
+    }
   }
+  if (!fresh) return null;
+  const cache = g.__fgLiveCache!;
+  for (const entry of cache.values()) {
+    const idx = entry.orders.findIndex((o) => o.order_no === tid);
+    if (idx >= 0) {
+      entry.orders[idx] = fresh;
+    }
+  }
+  return fresh;
 }

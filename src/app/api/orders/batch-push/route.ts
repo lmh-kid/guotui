@@ -12,6 +12,7 @@ import {
   getUserShopNames,
 } from "@/lib/push-billing";
 import { PUSH_FEE } from "@/lib/billing";
+import { refreshLiveOrder } from "@/lib/fangguo-live";
 
 /**
  * 批量订单推单（实时透传，订单不落库）
@@ -105,6 +106,13 @@ export async function POST(req: NextRequest) {
 
     // 6. 记录推单（日结算依据）
     const recorded = await recordPushes(user.id, pushable);
+
+    // 7. 并发刷新已推订单缓存（期望 dfStatus=3 工厂待审），前端立即看到「已推送」
+    if (pushable.length > 0) {
+      await Promise.allSettled(
+        pushable.slice(0, 50).map((tid) => refreshLiveOrder(tid, 3))
+      );
+    }
 
     const newBilling = await getPushBillingStats(user.id);
 

@@ -8,6 +8,7 @@ import {
 } from "@/lib/fangguo";
 import { getPushBillingStats, recordPushes, getUserShopNames } from "@/lib/push-billing";
 import { PUSH_FEE } from "@/lib/billing";
+import { refreshLiveOrder } from "@/lib/fangguo-live";
 
 /**
  * 单条订单推单（实时透传，订单不落库）
@@ -94,6 +95,9 @@ export async function POST(
 
     // 6. 记录推单（日结算依据）
     await recordPushes(user.id, [tid]);
+
+    // 7. 主动刷新该订单缓存（期望 dfStatus=3 工厂待审），前端立即看到「已推送」
+    await refreshLiveOrder(tid, 3);
 
     const newBilling = await getPushBillingStats(user.id);
 
