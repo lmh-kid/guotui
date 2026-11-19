@@ -5,15 +5,34 @@ import { shanghaiDateStr } from '@/lib/daily-settlement';
 import { PUSH_FEE } from '@/lib/billing';
 
 /**
- * 资金明细（普通用户，只读展示）
- * GET /api/wallet/fangguo-lines?days=30
+ * 资金明细（普通用户，只读展示，按订单号聚合）
+ * GET /api/wallet/fangguo-lines?days=1
  *
- * 数据源均为本地库已同步数据：
- * - fangguo_transactions：方果资金流水（日结任务/手动结算时同步，近 7 天窗口）
- *   按费用名分列展示：充值 / 材料费 / 运费 / 材料退回 / 运费退回
- * - push_records：推单记录 → 合成为「手动扣费」展示行（¥0.50/单），
- *   该费用仅在展示层合成，不产生任何入库流水（实际扣款在日结时统一结算）
+ * 布局对齐方果后台资金明细：一个订单号一行，费用分列展示
+ * - 材料费：预扣转实扣（打包发货时实扣）
+ * - 运费：扣费·非订单推送（发货后实扣）
+ * - 手动扣费：推单服务费 ¥0.50/单，从推单记录合成展示，
+ *   仅展示层合成不入库（实际扣款在日结统一结算）
+ * - 材料退回/运费退回：退费冲抵
+ * - 预扣冻结：订单推送时的材料费预扣（非实扣，不计入合计）
+ *
+ * 数据源均为本地库已同步数据（日结任务/手动结算时同步，近 7 天窗口）
  */
+interface OrderRow {
+  order_no: string; // 订单号（方果 tid；充值等无订单流水为空）
+  time: string; // 计费时间（该订单最近一次流水时间）
+  store_name: string | null;
+  recharge: number;
+  material: number;
+  freight: number;
+  manual: number;
+  material_refund: number;
+  freight_refund: number;
+  prehold: number; // 预扣冻结（不计入合计）
+  total: number; // 合计 = 材料费 + 运费 - 退回 + 手动扣费
+  has_push: boolean;
+}
+
 export async function GET(req: NextRequest) {
   const token = req.headers.get('x-session');
   const { user, error: authError } = await getCurrentUser(token);
@@ -22,14 +41,14 @@ export async function GET(req: NextRequest) {
   }
 
   const { searchParams } = new URL(req.url);
-  const daysRaw = parseInt(searchParams.get('days') || '30', 10);
-  const days = Math.min(90, Math.max(1, daysRaw));
+  const daysRaw = parseInt(searchParams.get('days') || '1', 10);
+  const days = Math.min(90, Math.max(1, daysRaw)); // 默认展示当天
 
   try {
     const supabase = await getSupabaseAdminClient();
-    const since = shanghaiDateStr(Date.now() - days * 86400_000);
+    const since = shanghaiDateStr(Date.now() - (days - 1) * 86400_000);
 
-    // 1. 方果流水（本用户，按计费时间倒序）
+    // 1. 方果流水（本用户）
     const { data: lines, error: linesErr } = await supabase
       .from('fangguo_transactions')
       .select(
@@ -40,111 +59,126 @@ export async function GET(req: NextRequest) {
       .order('transaction_time', { ascending: false });
     if (linesErr) throw linesErr;
 
-    // 2. 推单记录（手动扣费 ¥0.50 展示行）
+    // 2. 推单记录（手动扣费 ¥0.50 展示，仅展示不入库）
     const { data: pushes, error: pushErr } = await supabase
       .from('push_records')
       .select('order_no, push_date, created_at')
       .eq('user_id', user.id)
-      .gte('push_date', since)
-      .order('created_at', { ascending: false });
+      .gte('push_date', since);
     if (pushErr) throw pushErr;
 
-    interface DetailRow {
-      time: string;
-      tid: string | null;
-      store_name: string | null;
-      fee_type: string;
-      recharge: number;
-      material: number;
-      freight: number;
-      manual: number;
-      material_refund: number;
-      freight_refund: number;
-      other: number;
-      amount: number; // 原始金额（负=扣费 正=入账）
-      is_prehold: boolean;
-    }
+    // 3. 按订单号聚合：一个订单一行
+    const rowMap = new Map<string, OrderRow>();
+    const noOrderRows: OrderRow[] = []; // 无订单号流水（充值等）
 
-    const list: DetailRow[] = [];
+    const getRow = (key: string, time: string, store: string | null): OrderRow => {
+      let r = rowMap.get(key);
+      if (!r) {
+        r = {
+          order_no: key,
+          time,
+          store_name: store,
+          recharge: 0,
+          material: 0,
+          freight: 0,
+          manual: 0,
+          material_refund: 0,
+          freight_refund: 0,
+          prehold: 0,
+          total: 0,
+          has_push: false,
+        };
+        rowMap.set(key, r);
+      }
+      return r;
+    };
 
     for (const l of lines ?? []) {
       const amount = parseFloat(l.processed_amount as string);
+      const abs = Math.abs(amount);
       const name = String(l.fee_name_type ?? '');
       const kind = String(l.kind);
-      const row: DetailRow = {
-        time: l.transaction_time,
-        tid: l.tid ?? null,
-        store_name: l.store_name ?? null,
-        fee_type: '',
-        recharge: 0,
-        material: 0,
-        freight: 0,
-        manual: 0,
-        material_refund: 0,
-        freight_refund: 0,
-        other: 0,
-        amount,
-        is_prehold: kind === 'prehold',
-      };
-      const abs = Math.abs(amount);
+      const time = l.transaction_time;
+      const store = l.store_name ?? null;
+      const tid = l.tid && String(l.tid).length > 0 ? String(l.tid) : null;
 
-      if (kind === 'exclude') {
-        row.recharge = amount; // 充值为正数入账
-        row.fee_type = `充值（${l.business_node ?? ''}）`;
-      } else if (kind === 'charge') {
-        if (name.includes('材料')) row.material = abs;
-        else row.freight = abs; // 运费及其他实扣
-        row.fee_type = `${l.fee_type ?? ''}·${name || '实扣'}`;
-      } else if (kind === 'refund') {
-        if (name.includes('材料')) row.material_refund = amount;
-        else row.freight_refund = amount;
-        row.fee_type = `${l.fee_type ?? ''}·${name || '退费'}`;
-      } else if (kind === 'prehold') {
-        // 预扣冻结（订单推送时的材料费预扣），非实际成本，仅展示
-        row.material = abs;
-        row.fee_type = `预扣·${name || '订单推送'}（冻结，非实扣）`;
-      } else {
-        row.other = amount;
-        row.fee_type = `${l.fee_type ?? ''}·${name || '未知类型'}`;
+      if (!tid) {
+        // 充值等无订单流水：独立一行
+        const row: OrderRow = {
+          order_no: '',
+          time,
+          store_name: store,
+          recharge: kind === 'exclude' ? amount : 0,
+          material: 0,
+          freight: 0,
+          manual: 0,
+          material_refund: 0,
+          freight_refund: 0,
+          prehold: 0,
+          total: kind === 'exclude' ? amount : 0,
+          has_push: false,
+        };
+        if (kind !== 'exclude') {
+          row.total = abs; // 未知无单流水按扣款展示
+          row.material = abs;
+        }
+        noOrderRows.push(row);
+        continue;
       }
+
+      const row = getRow(tid, time, store);
+      if (time > row.time) row.time = time; // 计费时间取最近一笔
+
+      if (kind === 'charge') {
+        if (name.includes('材料')) row.material += abs;
+        else row.freight += abs;
+      } else if (kind === 'refund') {
+        if (name.includes('材料')) row.material_refund += abs;
+        else row.freight_refund += abs;
+      } else if (kind === 'prehold') {
+        row.prehold += abs; // 冻结，不计入合计
+      }
+      // unknown 不入账（与日结口径一致），可在每日对账中查看
+    }
+
+    // 4. 手动扣费：每笔推单 ¥0.50 并入对应订单行（仅展示）
+    const pushedSet = new Set<string>();
+    for (const p of pushes ?? []) {
+      const key = String(p.order_no);
+      pushedSet.add(key);
+      const row = getRow(key, p.created_at, null);
+      row.manual = PUSH_FEE;
+      row.has_push = true;
+      if (p.created_at > row.time) row.time = p.created_at;
+    }
+
+    // 5. 合计
+    const list: OrderRow[] = [];
+    for (const row of rowMap.values()) {
+      row.total =
+        Math.round(
+          (row.material + row.freight + row.manual - row.material_refund - row.freight_refund) *
+            100
+        ) / 100;
       list.push(row);
     }
-
-    // 3. 手动扣费展示行（每笔推单 ¥0.50，仅展示不入库）
-    for (const p of pushes ?? []) {
-      list.push({
-        time: p.created_at,
-        tid: p.order_no,
-        store_name: null,
-        fee_type: '手动扣费·推单服务费',
-        recharge: 0,
-        material: 0,
-        freight: 0,
-        manual: PUSH_FEE,
-        material_refund: 0,
-        freight_refund: 0,
-        other: 0,
-        amount: -PUSH_FEE,
-        is_prehold: false,
-      });
-    }
-
-    // 按时间倒序合并
+    list.push(...noOrderRows);
     list.sort((a, b) => (a.time < b.time ? 1 : a.time > b.time ? -1 : 0));
 
-    // 4. 汇总（预扣不计入实扣合计）
+    // 6. 汇总
     let totalMaterial = 0;
     let totalFreight = 0;
     let totalRefund = 0;
     let totalManual = 0;
     let pushCount = 0;
+    let totalAmount = 0;
     for (const r of list) {
-      if (r.is_prehold) continue;
       totalMaterial += r.material;
       totalFreight += r.freight;
       totalRefund += r.material_refund + r.freight_refund;
       totalManual += r.manual;
-      if (r.manual > 0) pushCount += 1;
+      if (r.has_push) pushCount += 1;
+      if (r.order_no !== '' || r.recharge > 0) totalAmount += r.total;
     }
 
     return NextResponse.json({
@@ -155,9 +189,7 @@ export async function GET(req: NextRequest) {
         totalFreight: parseFloat(totalFreight.toFixed(2)),
         totalRefund: parseFloat(totalRefund.toFixed(2)),
         totalManual: parseFloat(totalManual.toFixed(2)),
-        totalAmount: parseFloat(
-          (totalMaterial + totalFreight + totalRefund + totalManual).toFixed(2)
-        ),
+        totalAmount: parseFloat(totalAmount.toFixed(2)),
         pushCount,
         feePerOrder: PUSH_FEE,
       },
