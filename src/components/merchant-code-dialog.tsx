@@ -295,7 +295,7 @@ export default function MerchantCodeDialog({ orderNo, onClose, onSuccess }: Merc
                       <img src={item.image} alt="" className="w-12 h-12 rounded object-cover flex-shrink-0" />
                     )}
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-gray-900 truncate" title={item.title}>
+                      <p className="text-sm font-medium text-gray-900 max-w-[720px] break-words" title={item.title}>
                         {item.title}
                       </p>
                       <div className="flex gap-2 items-center mt-0.5 flex-wrap">
