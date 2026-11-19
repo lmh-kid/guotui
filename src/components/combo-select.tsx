@@ -11,7 +11,7 @@ import {
   CommandItem,
   CommandList,
 } from '@/components/ui/command';
-import { Check, ChevronsUpDown } from 'lucide-react';
+import { Check, ChevronsUpDown, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export interface ComboSelectProps {
@@ -29,6 +29,8 @@ export interface ComboSelectProps {
   emptyText?: string;
   /** 允许搜索无结果时直接采用输入值（自定义编码） */
   allowFreeInput?: boolean;
+  /** 允许清除已选值（显示 X 按钮） */
+  allowClear?: boolean;
   /** 禁用态 */
   disabled?: boolean;
   /** 列表最大高度 class（默认 max-h-60） */
@@ -38,6 +40,7 @@ export interface ComboSelectProps {
 /**
  * 可搜索下拉选择（Popover + cmdk 前端过滤）。
  * 材质/颜色/型号/图号四要素编码选择用，选项较多时输入关键字过滤。
+ * 注：onWheelCapture 阻止冒泡，修复弹窗（Dialog 内嵌 Popover）滚轮滚动被锁的问题。
  */
 export default function ComboSelect({
   options,
@@ -47,6 +50,7 @@ export default function ComboSelect({
   searchPlaceholder = '输入关键字过滤...',
   emptyText = '暂无匹配选项',
   allowFreeInput = true,
+  allowClear = false,
   disabled = false,
   listClassName,
 }: ComboSelectProps) {
@@ -69,20 +73,43 @@ export default function ComboSelect({
     >
       <PopoverTrigger asChild>
         <Button
+          type="button"
           variant="outline"
           role="combobox"
           aria-expanded={open}
           disabled={disabled}
           className={cn(
-            'w-full justify-between font-normal h-9 px-3 py-2 text-sm',
+            'w-full justify-between gap-1 font-normal h-9 px-3 py-2 text-sm',
             value ? 'text-gray-900' : 'text-gray-400'
           )}
         >
-          <span className="truncate text-left">{value || placeholder}</span>
-          <ChevronsUpDown className="ml-1 h-4 w-4 shrink-0 opacity-50" />
+          <span className="flex-1 min-w-0 truncate text-left">{value || placeholder}</span>
+          <span className="flex items-center gap-0.5 shrink-0">
+            {allowClear && value && !disabled && (
+              <span
+                role="button"
+                aria-label="清除"
+                tabIndex={-1}
+                className="inline-flex items-center justify-center rounded p-0.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onValueChange('');
+                }}
+              >
+                <X className="h-3.5 w-3.5" />
+              </span>
+            )}
+            <ChevronsUpDown className="h-4 w-4 shrink-0 opacity-50" />
+          </span>
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+      <PopoverContent
+        className="w-[--radix-popover-trigger-width] p-0"
+        align="start"
+        onWheelCapture={(e) => e.stopPropagation()}
+        onWheel={(e) => e.stopPropagation()}
+      >
         <Command shouldFilter>
           <CommandInput
             value={keyword}

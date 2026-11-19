@@ -342,8 +342,8 @@ export default function MerchantCodeDialog({ orderNo, onClose, onSuccess }: Merc
                     )}
                   </div>
 
-                  {/* 四要素编辑（可搜索下拉） */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  {/* 四要素编辑（可搜索下拉）+ 图片展示区 */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-[repeat(4,minmax(0,1fr))_120px] gap-3">
                     <div>
                       <label className="text-xs text-gray-500 mb-1 block">
                         材质 <span className="text-red-500">*</span>
@@ -354,6 +354,7 @@ export default function MerchantCodeDialog({ orderNo, onClose, onSuccess }: Merc
                         onValueChange={(v) => handleMaterialChange(item.id, v)}
                         placeholder="选择材质"
                         searchPlaceholder="输入材质关键字..."
+                        allowClear
                       />
                     </div>
 
@@ -367,6 +368,7 @@ export default function MerchantCodeDialog({ orderNo, onClose, onSuccess }: Merc
                         onValueChange={(v) => updateDraft(item.id, { colorCode: v })}
                         placeholder={draft.materialCode ? '选择颜色' : '先选材质'}
                         searchPlaceholder="输入颜色关键字..."
+                        allowClear
                       />
                     </div>
 
@@ -380,6 +382,7 @@ export default function MerchantCodeDialog({ orderNo, onClose, onSuccess }: Merc
                         onValueChange={(v) => updateDraft(item.id, { modelCode: v })}
                         placeholder={optionsReady ? (draft.materialCode ? '选择型号' : '先选材质可缩小型号范围') : '候选加载中...'}
                         searchPlaceholder="输入型号关键字..."
+                        allowClear
                       />
                     </div>
 
@@ -393,7 +396,26 @@ export default function MerchantCodeDialog({ orderNo, onClose, onSuccess }: Merc
                         onValueChange={(v) => updateDraft(item.id, { pictureCode: v })}
                         placeholder={optionsReady ? '选择图号' : '候选加载中...'}
                         searchPlaceholder="输入图号关键字..."
+                        allowClear
                       />
+                    </div>
+
+                    {/* 图片展示区域 */}
+                    <div>
+                      <label className="text-xs text-gray-500 mb-1 block">图片</label>
+                      <div className="w-full h-[76px] rounded-md border border-gray-200 bg-gray-50 flex items-center justify-center overflow-hidden">
+                        {item.image ? (
+                          <img
+                            src={item.image}
+                            alt={item.title}
+                            title="点击查看大图"
+                            className="w-full h-full object-contain cursor-zoom-in hover:opacity-80 transition-opacity"
+                            onClick={() => window.open(item.image ?? '', '_blank')}
+                          />
+                        ) : (
+                          <span className="text-xs text-gray-400">暂无图片</span>
+                        )}
+                      </div>
                     </div>
                   </div>
 
