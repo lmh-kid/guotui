@@ -406,13 +406,13 @@ export default function MerchantCodeDialog({ orderNo, onClose, onSuccess }: Merc
                     <div>
                       <label className="text-xs text-gray-500 mb-1 block">图片</label>
                       <div className="w-full h-[76px] rounded-md border border-gray-200 bg-gray-50 flex items-center justify-center overflow-hidden">
-                        {draft.pictureCode && data?.options.picImages?.[draft.pictureCode] ? (
+                        {draft.pictureCode && options.picImages?.[draft.pictureCode] ? (
                           <img
-                            src={data.options.picImages[draft.pictureCode]}
+                            src={options.picImages[draft.pictureCode]}
                             alt={draft.pictureCode}
                             title={`图号 ${draft.pictureCode}（点击查看大图）`}
                             className="w-full h-full object-contain cursor-zoom-in hover:opacity-80 transition-opacity"
-                            onClick={() => window.open(data.options.picImages?.[draft.pictureCode] ?? '', '_blank')}
+                            onClick={() => window.open(options.picImages?.[draft.pictureCode] ?? '', '_blank')}
                           />
                         ) : (
                           <span className="text-xs text-gray-400">{draft.pictureCode ? '未匹配到图片' : '选图号后展示'}</span>
