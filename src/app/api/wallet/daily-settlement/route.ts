@@ -64,21 +64,23 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // 4. 日结扣款流水（wallet_transactions 描述前缀「日结 YYYY-MM-DD」）
+    // 4. 日结扣款流水（wallet_transactions 描述前缀「日结 YYYY-MM-DD」，含主结算+补扣/补退）
     const { data: settledTx, error: txErr } = await supabase
       .from('wallet_transactions')
       .select('amount, balance_after, description, created_at')
       .eq('user_id', user.id)
-      .eq('type', 'consume')
       .gte('created_at', new Date(Date.now() - (days + 10) * 86400_000).toISOString())
-      .like('description', '日结 %');
+      .like('description', '日结 %')
+      .order('created_at', { ascending: true });
     if (txErr) throw txErr;
+    // 同一账期可能有多条流水（主结算 + 迟到补扣/补退），金额求和、余额取最新一条
     const settledByDate = new Map<string, { amount: number; balanceAfter: number }>();
     for (const t of settledTx ?? []) {
       const m = /^日结 (\d{4}-\d{2}-\d{2})/.exec(t.description ?? '');
       if (m) {
+        const prev = settledByDate.get(m[1]);
         settledByDate.set(m[1], {
-          amount: parseFloat(t.amount as string),
+          amount: parseFloat(((prev?.amount ?? 0) + parseFloat(t.amount as string)).toFixed(2)),
           balanceAfter: parseFloat(t.balance_after as string),
         });
       }
@@ -132,7 +134,7 @@ export async function GET(req: NextRequest) {
           charge: parseFloat(g.charge.toFixed(2)),
           refund: parseFloat(g.refund.toFixed(2)),
           material_freight: materialFreight,
-          total: parseFloat((materialFreight + pushFee).toFixed(2)),
+          total: parseFloat((materialFreight - pushFee).toFixed(2)),
           settled: !!settled || g.allSettled,
           settled_amount: settled ? settled.amount : null,
           balance_after: settled ? settled.balanceAfter : null,

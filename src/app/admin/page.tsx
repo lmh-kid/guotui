@@ -939,7 +939,7 @@ export default function AdminPage() {
             </div>
 
             <p className="text-xs text-gray-400">
-              每天凌晨 00:00（北京时间）自动结算：用户应付 = 方果实扣材运费 + ¥0.50×推单数；退费自动冲抵（仅冲抵已实扣部分）。账期按方果记账日归属（滞后运费记在订单当日账上），账期满 7 天封账结算，之后金额不再变动，可与方果账单逐日核对。
+              每天凌晨 00:00（北京时间）自动结算：用户应付 = 方果实扣材运费 + ¥0.50×推单数，实际扣除用户余额；退费自动冲抵（仅冲抵已实扣部分）。账期按方果记账日归属（滞后运费记在订单当日账上），结算后迟到到达的材运费会在下次日结时自动补扣/补退；账期满 7 天封账，之后金额不再变动，可与方果账单逐日核对。
             </p>
 
             {settlementSummary && settlementSummary.unassignedLines > 0 && (
@@ -1003,8 +1003,8 @@ export default function AdminPage() {
                             ) : (
                               <Badge className="bg-amber-100 text-amber-700">
                                 {r.date >= new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
-                                  ? '待结算（未满 7 天，账期还在补录滞后费用）'
-                                  : '待结算（账期满 7 天后自动结算）'}
+                                  ? '待结算（当日，0 点自动结算）'
+                                  : '待结算（下次日结时结算）'}
                               </Badge>
                             )}
                           </TableCell>

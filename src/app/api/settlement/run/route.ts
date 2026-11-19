@@ -7,7 +7,7 @@ import { runDailySettlement } from '@/lib/daily-settlement';
  * POST /api/settlement/run
  *
  * 与每天 00:00 的定时任务等价（全局互斥）：
- * 同步方果资金流水（近 7 天） + 结算账期满 7 天的材运费 + 0.5×推单数
+ * 同步方果资金流水（近 7 天） + 结算账期 ≤ 今天的材运费 + 0.5×推单数（真实扣余额，迟到费用自动补扣/补退）
  */
 export async function POST(req: NextRequest) {
   const token = req.headers.get('x-session');

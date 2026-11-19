@@ -146,7 +146,7 @@ export async function GET(req: NextRequest) {
           charge: parseFloat(g.charge.toFixed(2)),
           refund: parseFloat(g.refund.toFixed(2)),
           material_freight: materialFreight,
-          total: parseFloat((materialFreight + pushFee).toFixed(2)),
+          total: parseFloat((materialFreight - pushFee).toFixed(2)),
         };
       })
       .sort((a, b) =>
