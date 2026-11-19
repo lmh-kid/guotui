@@ -51,8 +51,10 @@ export default function FangguoLinesTab() {
   const load = useCallback(async (d: number) => {
     setLoading(true);
     try {
-      const res = await apiRequest(`/api/wallet/fangguo-lines?days=${d}`);
-      const json = (await res.json()) as { list?: OrderRow[]; summary?: Summary };
+      const json = (await apiRequest(`/api/wallet/fangguo-lines?days=${d}`)) as {
+        list?: OrderRow[];
+        summary?: Summary;
+      };
       setRows(json.list ?? []);
       setSummary(json.summary ?? null);
     } catch (e) {
@@ -70,11 +72,10 @@ export default function FangguoLinesTab() {
   const handleManualSettle = async () => {
     setSettling(true);
     try {
-      const res = await apiRequest('/api/settlement/run', {
+      const json = (await apiRequest('/api/settlement/run', {
         method: 'POST',
         body: JSON.stringify({}),
-      });
-      const json = (await res.json()) as {
+      })) as {
         summary?: {
           syncedLines?: number;
           settledUsers?: number;
