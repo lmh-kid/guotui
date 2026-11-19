@@ -241,6 +241,17 @@ export async function POST(
       colorCode,
       modelCode,
       pictureCode,
+      // 图片字段原值回传：saveProduct 是「商品/图片」全量保存接口，
+      // 不回传可能清空订单原有图片；原值透传保证改码不动图
+      additionalImg: it.additionalImg ?? undefined,
+      diyList:
+        (it.diyList ?? []).length > 0
+          ? (it.diyList ?? []).map((d) => ({
+              effectUrl: d.effectUrl ?? "",
+              sort: d.sort ?? 0,
+              workUrl: d.workUrl ?? "",
+            }))
+          : undefined,
     });
   }
 

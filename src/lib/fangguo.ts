@@ -131,6 +131,7 @@ export interface FangguoOrderItem {
   modelCode: string | null;
   pictureCode: string | null;
   merchandisePicPath: string;
+  additionalImg?: string | null; // 副图（saveProduct 入参同名，保存时需原值回传）
   customPicture: boolean;
   productType: number;
   logisticsCompanyCode: string | null;
@@ -421,6 +422,13 @@ export interface SaveProductItemInput {
   colorCode: string;
   modelCode: string;
   pictureCode: string;
+  /**
+   * 副图地址（可选）。saveProduct 为「商品/图片」全量保存接口，
+   * 若订单原有副图而保存时不回传，可能被清空——因此原值回传保底。
+   */
+  additionalImg?: string | null;
+  /** 定制设计列表原值回传（打印图 workUrl 不允许在改码时被覆盖丢失） */
+  diyList?: Array<{ effectUrl: string; sort: number; workUrl: string }> | null;
 }
 
 /**
