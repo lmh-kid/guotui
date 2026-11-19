@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-utils';
 import { getSupabaseAdminClient } from '@/storage/database/supabase-client';
-import { shanghaiDateStr } from '@/lib/daily-settlement';
+import { shanghaiDateStr, getSettlementStartDate } from '@/lib/daily-settlement';
 import { PUSH_FEE } from '@/lib/billing';
 
 /**
@@ -30,6 +30,7 @@ export async function GET(req: NextRequest) {
   try {
     const supabase = await getSupabaseAdminClient();
     const since = shanghaiDateStr(Date.now() - days * 86400_000);
+    const startDate = await getSettlementStartDate();
 
     // 1. 方果流水（本用户）
     const { data: lines, error: linesErr } = await supabase
@@ -79,6 +80,7 @@ export async function GET(req: NextRequest) {
       {
         date: string;
         pushedTids: Set<string>;
+        chargedTids: Set<string>; // 当天产生扣费流水的订单（跨日订单服务费补收用）
         matByTid: Map<string, { prehold: number; charge: number }>;
         freight: number; // 运费等非材料实扣（负）
         refund: number; // 退费（正，无条件冲抵）
@@ -91,6 +93,7 @@ export async function GET(req: NextRequest) {
         g = {
           date,
           pushedTids: new Set(),
+          chargedTids: new Set(),
           matByTid: new Map(),
           freight: 0,
           refund: 0,
@@ -122,6 +125,7 @@ export async function GET(req: NextRequest) {
         continue;
       }
       if (l.kind === 'charge' && amount < 0) {
+        if (tid) g.chargedTids.add(tid);
         if (tid && name.includes('材料')) {
           const a = g.matByTid.get(tid) ?? { prehold: 0, charge: 0 };
           a.charge += abs;
@@ -140,6 +144,45 @@ export async function GET(req: NextRequest) {
       const g = getGroup(p.push_date);
       g.pushedTids.add(p.order_no);
       if (!p.fee_applied) g.allSettled = false;
+    }
+
+    // 5. 跨日订单服务费补收（与日结 settleUserDay 口径一致）
+    //    当天有扣费、但预扣不在追账账期（无预扣流水 / 早于结算起始日）的订单，
+    //    在本账期补收 0.5；预扣已在推送日账期收过的订单不重复计
+    const crossMap = new Map<string, string[]>();
+    const allCross = new Set<string>();
+    for (const [date, g] of groups) {
+      const cross = [...g.chargedTids].filter((t) => !g.pushedTids.has(t));
+      if (cross.length === 0) continue;
+      crossMap.set(date, cross);
+      for (const t of cross) allCross.add(t);
+    }
+    if (allCross.size > 0) {
+      const preDateByTid = new Map<string, string>();
+      const tidList = Array.from(allCross);
+      for (let i = 0; i < tidList.length; i += 50) {
+        const { data: preLines } = await supabase
+          .from('fangguo_transactions')
+          .select('tid, settle_date')
+          .eq('user_id', user.id)
+          .eq('kind', 'prehold')
+          .in('tid', tidList.slice(i, i + 50));
+        for (const l of preLines ?? []) {
+          const tid = String(l.tid ?? '');
+          const d = String(l.settle_date ?? '').slice(0, 10);
+          if (!tid || !d) continue;
+          const prev = preDateByTid.get(tid);
+          if (!prev || d < prev) preDateByTid.set(tid, d);
+        }
+      }
+      for (const [date, cross] of crossMap) {
+        const g = groups.get(date);
+        if (!g) continue;
+        for (const t of cross) {
+          const preDate = preDateByTid.get(t);
+          if (!preDate || (startDate && preDate < startDate)) g.pushedTids.add(t);
+        }
+      }
     }
 
     const list = [...groups.values()]

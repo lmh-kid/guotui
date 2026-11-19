@@ -77,6 +77,7 @@ export async function GET(req: NextRequest) {
         account: string;
         date: string;
         pushedTids: Set<string>;
+        chargedTids: Set<string>; // 当天产生扣费流水的订单（跨日订单服务费补收用）
         matByTid: Map<string, { prehold: number; charge: number }>;
         freight: number; // 运费等非材料实扣（负）
         refund: number; // 退费（正，无条件冲抵）
@@ -93,6 +94,7 @@ export async function GET(req: NextRequest) {
           account: accountMap.get(userId) ?? userId.slice(0, 8),
           date,
           pushedTids: new Set(),
+          chargedTids: new Set(),
           matByTid: new Map(),
           freight: 0,
           refund: 0,
@@ -127,6 +129,7 @@ export async function GET(req: NextRequest) {
       }
       if (l.kind === 'charge' && amount < 0) {
         g.lineCount += 1;
+        if (tid) g.chargedTids.add(tid);
         if (tid && name.includes('材料')) {
           const a = g.matByTid.get(tid) ?? { prehold: 0, charge: 0 };
           a.charge += abs;
@@ -146,6 +149,44 @@ export async function GET(req: NextRequest) {
       // 兜底：当天流水尚未同步时，系统推单记录仍计入（直推单靠流水，Set 去重合并）
       g.pushedTids.add(p.order_no);
       if (!p.fee_applied) g.allSettled = false;
+    }
+
+    // 4.5 跨日订单服务费补收（与日结 settleUserDay 口径一致）
+    //     当天有扣费、但预扣不在追账账期（无预扣流水 / 早于结算起始日）的订单，
+    //     在本账期补收 0.5；预扣已在推送日账期收过的订单不重复计
+    const crossMap = new Map<string, string[]>(); // 组 key -> 待判定 tid
+    const allCross = new Set<string>();
+    for (const [key, g] of groups) {
+      const cross = [...g.chargedTids].filter((t) => !g.pushedTids.has(t));
+      if (cross.length === 0) continue;
+      crossMap.set(key, cross);
+      for (const t of cross) allCross.add(t);
+    }
+    if (allCross.size > 0) {
+      const preDateByTid = new Map<string, string>();
+      const tidList = Array.from(allCross);
+      for (let i = 0; i < tidList.length; i += 50) {
+        const { data: preLines } = await supabase
+          .from('fangguo_transactions')
+          .select('tid, settle_date')
+          .eq('kind', 'prehold')
+          .in('tid', tidList.slice(i, i + 50));
+        for (const l of preLines ?? []) {
+          const tid = String(l.tid ?? '');
+          const d = String(l.settle_date ?? '').slice(0, 10);
+          if (!tid || !d) continue;
+          const prev = preDateByTid.get(tid);
+          if (!prev || d < prev) preDateByTid.set(tid, d);
+        }
+      }
+      for (const [key, cross] of crossMap) {
+        const g = groups.get(key);
+        if (!g) continue;
+        for (const t of cross) {
+          const preDate = preDateByTid.get(t);
+          if (!preDate || (startDate && preDate < startDate)) g.pushedTids.add(t);
+        }
+      }
     }
 
     const list = [...groups.values()]

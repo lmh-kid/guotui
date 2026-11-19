@@ -487,11 +487,39 @@ async function settleUserDay(
   // 预扣流水去重 tid 统计（推送必然产生预扣冻结）；当天流水尚未同步时由
   // 系统推单记录（push_records.order_no）兜底合并，重推/取消重推同一单去重算 1 单
   const pushedTids = new Set<string>();
+  const chargedTids = new Set<string>(); // 当天产生扣费流水的订单（用于跨日订单补收服务费）
   for (const l of dayLines ?? []) {
-    if (l.kind === "prehold" && l.tid) pushedTids.add(l.tid);
+    if (!l.tid) continue;
+    if (l.kind === "prehold") pushedTids.add(l.tid);
+    else if (l.kind === "charge") chargedTids.add(l.tid);
   }
   for (const p of dayPushes ?? []) {
     if (p.order_no) pushedTids.add(p.order_no);
+  }
+  // 跨日补收：订单「推送日 → 发货日」跨账期时，预扣记在推送日账期；若推送日早于
+  // 结算起始日（不追账），该单服务费将永远收不到。对当天有扣费、但预扣不在追账
+  // 账期内的订单，在本账期补收 0.5——正常运营（预扣与扣费各在其账期且均已追账）
+  // 不会重复，因为此时推送日账期已收过 0.5
+  const crossDayTids = [...chargedTids].filter((t) => !pushedTids.has(t));
+  if (crossDayTids.length > 0) {
+    const { data: preLines } = await supabase
+      .from("fangguo_transactions")
+      .select("tid, settle_date")
+      .eq("user_id", g.user)
+      .eq("kind", "prehold")
+      .in("tid", crossDayTids);
+    const preDateByTid = new Map<string, string>();
+    for (const l of preLines ?? []) {
+      const tid = String(l.tid ?? "");
+      const d = String(l.settle_date ?? "").slice(0, 10);
+      if (!tid || !d) continue;
+      const prev = preDateByTid.get(tid);
+      if (!prev || d < prev) preDateByTid.set(tid, d);
+    }
+    for (const t of crossDayTids) {
+      const preDate = preDateByTid.get(t);
+      if (!preDate || (startDate && preDate < startDate)) pushedTids.add(t);
+    }
   }
   const pushCount = pushedTids.size;
   const pushFee = parseFloat((pushCount * PUSH_FEE).toFixed(2)); // 正数（展示用）

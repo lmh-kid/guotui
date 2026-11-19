@@ -179,10 +179,12 @@ export async function GET(req: NextRequest) {
     const round2 = (x: number) => Math.round(x * 100) / 100;
     const list: OrderRow[] = [];
     for (const [tid, a] of accMap) {
-      // 推单服务费 ¥0.50 归属推送日账期：推送日在查询窗口内才计（含方果后台直推），
-      // 昨日推送今日发货的单的 0.5 记昨日，不重复计入今日
+      // 推单服务费 ¥0.50 与日结口径对齐：推送日在追账范围内且在本窗口 → 归属推送日；
+      // 推送日缺失或早于结算起始日（不追账）→ 日结在该单扣费账期补收，本窗口计 0.5
       const preholdDate = preholdDateByTid.get(tid);
-      const manual = preholdDate && preholdDate >= since ? PUSH_FEE : 0;
+      const windowed = preholdDate && preholdDate >= since;
+      const crossDay = !preholdDate || (startDate && preholdDate < startDate);
+      const manual = windowed || crossDay ? PUSH_FEE : 0;
       const row: OrderRow = {
         order_no: tid,
         time: a.time,
