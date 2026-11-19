@@ -519,3 +519,64 @@ export function mapPlatformCode(platform: number, platformDesc?: string): string
   if (temuCodes.includes(platform)) return "temu";
   return "other";
 }
+
+// ============ 资金流水（日结计费数据源） ============
+
+/** 绑定工厂（用于资金流水按工厂查询） */
+export interface FangguoBindFactory {
+  id: number;
+  factoryName?: string | null;
+  factoryTenantId?: number | null;
+}
+
+/** 方果资金流水行（/shop/transaction-line/page） */
+export interface FangguoTransactionLine {
+  id: number; // 流水唯一 id（幂等键）
+  tid: string | null; // 订单号（可能为空，如纯充值流水）
+  feeType: string; // 费用类型：扣费/预扣转实扣/退费/预扣退费/充值
+  feeNameType: string; // 费用名：材料费/运费/手动充值
+  businessNode: string; // 业务节点：订单推送/打包发货/一键打包/订单取消推送/充值
+  unitPrice: number | null;
+  quantity: number | null;
+  processedAmount: number; // 正=入账(退费/充值) 负=扣费
+  storeName: string | null;
+  shopName?: string | null;
+  pushTime: number | null;
+  transactionTime: number; // 计入方果账户的时间戳(ms)
+}
+
+/** 拉取绑定的工厂列表（含 factoryTenantId，用于流水查询） */
+export async function fetchBindFactoryIds(): Promise<number[]> {
+  const data = await callApi<FangguoBindFactory[]>("GET", "/shop/bind-factory-list");
+  const ids = new Set<number>();
+  for (const f of data ?? []) {
+    const fid = f.factoryTenantId ?? f.id;
+    if (fid) ids.add(fid);
+  }
+  return Array.from(ids);
+}
+
+/** 资金明细分页（商家端一次只能查一个工厂） */
+export async function fetchTransactionLines(params: {
+  factoryId: number;
+  transactionStartTime: number;
+  transactionEndTime: number;
+  pageNo: number;
+  pageSize: number;
+}): Promise<{ list: FangguoTransactionLine[]; total: number; debit?: number; credit?: number }> {
+  const data = await callApi<{
+    list: FangguoTransactionLine[];
+    total: number;
+    debit?: number;
+    credit?: number;
+  }>("POST", "/shop/transaction-line/page", {
+    body: {
+      tenantIdList: [params.factoryId],
+      transactionStartTime: params.transactionStartTime,
+      transactionEndTime: params.transactionEndTime,
+      pageNo: params.pageNo,
+      pageSize: params.pageSize,
+    },
+  });
+  return data;
+}

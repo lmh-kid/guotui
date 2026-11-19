@@ -7,7 +7,6 @@ import {
   FangguoApiError,
 } from "@/lib/fangguo";
 import {
-  settleUser,
   getPushBillingStats,
   recordPushes,
   getUserShopNames,
@@ -18,7 +17,8 @@ import { PUSH_FEE } from "@/lib/billing";
  * 批量订单推单（实时透传，订单不落库）
  * Body: { order_nos: string[] }  （方果平台订单号 tid 数组）
  *
- * 流程: 惰性日结算 → 负余额禁推 → 实时校验归属/状态 → 配额预检 → 方果批量推单 → 记录 push_records
+ * 流程: 负余额禁推 → 实时校验归属/状态 → 配额预检 → 方果批量推单 → 记录 push_records
+ * （日结由定时任务每天 00:00 执行，见 src/lib/daily-settlement.ts）
  */
 export async function POST(req: NextRequest) {
   const token = req.headers.get("x-session");
@@ -36,10 +36,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "请选择要推送的订单" }, { status: 400 });
     }
 
-    // 1. 惰性日结算
-    await settleUser(user.id);
-
-    // 2. 计费状态
+    // 1. 计费状态
     const billing = await getPushBillingStats(user.id);
     if (billing.blocked) {
       return NextResponse.json(
@@ -48,14 +45,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 3. 店铺归属
+    // 2. 店铺归属
     const shopNames = await getUserShopNames(user.id);
     if (shopNames.length === 0) {
       return NextResponse.json({ error: "您暂未分配店铺，请联系管理员" }, { status: 403 });
     }
     const shopSet = new Set(shopNames);
 
-    // 4. 逐单实时校验（并发）
+    // 3. 逐单实时校验（并发）
     const details = await Promise.allSettled(
       order_nos.map((tid) => fetchFangguoOrderDetail(tid))
     );
@@ -88,7 +85,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 5. 配额预检
+    // 4. 配额预检
     if (billing.availableQuota < pushable.length) {
       return NextResponse.json(
         {
@@ -98,7 +95,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 6. 调方果批量推单
+    // 5. 调方果批量推单
     try {
       await pushFangguoOrders(pushable);
     } catch (e) {
@@ -106,7 +103,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `方果推单失败: ${msg}` }, { status: 400 });
     }
 
-    // 7. 记录推单（日结算依据）
+    // 6. 记录推单（日结算依据）
     const recorded = await recordPushes(user.id, pushable);
 
     const newBilling = await getPushBillingStats(user.id);

@@ -113,3 +113,27 @@ export const authSessions = pgTable("auth_sessions", {
 }, (table) => [
 	index("auth_sessions_user_id_idx").using("btree", table.userId.asc().nullsLast().op("uuid_ops")),
 ]);
+
+export const fangguoTransactions = pgTable("fangguo_transactions", {
+	id: varchar("id", { length: 32 }).primaryKey(),
+	userId: varchar("user_id", { length: 255 }),
+	tid: varchar("tid", { length: 64 }),
+	feeType: varchar("fee_type", { length: 32 }).notNull(),
+	feeNameType: varchar("fee_name_type", { length: 32 }).notNull(),
+	businessNode: varchar("business_node", { length: 64 }).notNull(),
+	kind: varchar("kind", { length: 16 }).notNull(),
+	unitPrice: numeric("unit_price", { precision: 12, scale: 4 }),
+	quantity: integer("quantity"),
+	processedAmount: numeric("processed_amount", { precision: 12, scale: 4 }).notNull(),
+	storeName: varchar("store_name", { length: 128 }),
+	pushTime: timestamp("push_time", { withTimezone: true, mode: 'string' }),
+	transactionTime: timestamp("transaction_time", { withTimezone: true, mode: 'string' }).notNull(),
+	settleDate: date("settle_date", { mode: 'string' }).notNull(),
+	settled: boolean("settled").default(false).notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("fangguo_transactions_tid_idx").using("btree", table.tid.asc().nullsLast().op("text_ops")),
+	index("fangguo_transactions_user_settle_idx").using("btree", table.userId.asc().nullsLast().op("text_ops"), table.settleDate.asc().nullsLast().op("date_ops")),
+	index("fangguo_transactions_settled_date_idx").using("btree", table.settled.asc().nullsLast().op("bool_ops"), table.settleDate.asc().nullsLast().op("date_ops")),
+]);

@@ -6,8 +6,8 @@
 
 ### 核心架构原则（重要）
 - **订单不落库**：订单数据在用户查询时实时从方果 API 拉取（透传），本地不存任何订单信息
-- **本地仅持久化**：用户信息（user_balances）、钱包流水（wallet_transactions）、推单计费记录（push_records）、店铺分配（shops）、系统配置（system_configs）
-- **计费模式：日结**：推单成功时仅记录 push_records（fee_applied=false），次日用户任意请求触发惰性结算，汇总扣费（乐观锁，允许负余额），负余额用户次日禁止推单
+- **本地仅持久化**：用户信息（user_balances）、钱包流水（wallet_transactions）、推单计费记录（push_records）、方果资金流水（fangguo_transactions）、店铺分配（shops）、系统配置（system_configs）
+- **计费模式：日结（定时任务）**：用户应付 = 方果实扣材运费 + 0.5×推单数。每天 00:00（Asia/Shanghai）定时结算账期 ≤ 昨天的费用（`src/lib/daily-settlement.ts`，server.ts 注册 node-cron），每用户每天一条 consume 流水；推单时仅记录 push_records 不扣费；负余额禁止推单
 - **订单查询窗口**：仅支持近 1/3/7 天（方果 tidList 接口限制）
 
 ### 版本技术栈
@@ -26,7 +26,7 @@
 ├── src/
 │   ├── app/
 │   │   ├── api/                # 后端 API 路由
-│   │   │   ├── balance/        # 余额查询 GET（触发惰性日结算）
+│   │   │   ├── balance/        # 余额查询 GET
 │   │   │   ├── wallet/
 │   │   │   │   ├── recharge/         # 充值 POST
 │   │   │   │   └── transactions/     # 流水列表 GET
@@ -48,7 +48,7 @@
 │   │   │   │   └── fangguo/                # 方果平台对接（KEY配置/店铺分配）
 │   │   │   └── supabase-config/ # Supabase 配置注入
 │   │   ├── login/               # 登录页（无注册，账号由管理员创建）
-│   │   ├── admin/               # 后台管理页（用户管理：创建/删除/调余额/调整店铺分配；流水/推单记录/平台对接）
+│   │   ├── admin/               # 后台管理页（用户管理：创建/删除/调余额/调整店铺分配；流水/日结账单（材运费+0.5，含手动触发日结）/平台对接）
 │   │   ├── wallet/              # 钱包页
 │   │   ├── page.tsx             # 首页（订单管理：实时透传+计费状态栏）
 │   │   └── layout.tsx           # 根布局
@@ -69,7 +69,7 @@
 │   │   ├── supabase-browser.ts  # 浏览器端 Supabase 客户端（已无引用，仅保留）
 │   │   ├── supabase-config-inject.tsx  # Supabase 配置注入组件
 │   │   └── utils.ts             # 通用工具（cn 等）
-│   ├── server.ts                # 自定义启动（next 仅启动服务，无定时同步）
+│   ├── server.ts                # 自定义启动（next + node-cron 每天 00:00 日结定时任务）
 │   └── storage/database/
 │       ├── supabase-client.ts   # 服务端 Supabase 客户端（含 getSupabaseAdminClient）
 │       └── shared/schema.ts     # Drizzle Schema 定义
@@ -87,6 +87,7 @@
 | `user_balances` | 用户余额 | user_id, balance, frozen_balance, total_recharge, total_consume, is_admin |
 | `wallet_transactions` | 钱包流水 | user_id, type(recharge/consume/refund), amount, description, balance_after |
 | `push_records` | 推单计费记录（日结依据） | user_id, order_no, push_date, fee_applied, settled_at；UNIQUE(user_id, order_no) |
+| `fangguo_transactions` | 方果资金流水镜像（日结材运费依据） | id(PK=方果流水id), user_id(店铺名映射), tid, kind(charge/refund/prehold/exclude/unknown), processed_amount, settle_date, settled；upsert 幂等 |
 | `shops` | 用户店铺（方果店铺分配） | user_id, platform, shop_name, fangguo_shop_id, platform_code, brand_name, status |
 | `system_configs` | 系统配置（无RLS，仅service role） | key(fangguo_api_key), value |
 
@@ -102,12 +103,24 @@
 
 订单页默认 Tab 为「待整理」（pending）。
 
-### 计费规则（日结模式）
-- 单价：0.50 元/单（`src/lib/billing.ts` PUSH_FEE）
-- **推单时**：不立即扣费，仅插入 push_records（fee_applied=false，UNIQUE 幂等防重复计费）
-- **次日惰性结算**：用户任意请求（orders/balance 等）触发 `settleUser`，按日期汇总昨日及更早的未结算记录，乐观锁扣余额（3次重试，**允许负余额**），每天写一条 consume 流水（描述含日期/单数/单价）
+### 计费规则（日结 = 材运费 + 0.5 服务费，定时任务模式）
+用户应付 = 方果实扣材运费 + 0.50 元/单（`src/lib/billing.ts` PUSH_FEE）
+
+- **费用数据源**：方果资金流水接口 `/shop/transaction-line/page`（`fangguo.ts` fetchTransactionLines，商家端一次只能查一个工厂）。流水 kind 分类（daily-settlement.ts classifyLine）：
+  - charge（实扣·入账）：预扣转实扣（材料费，打包发货/一键打包节点）+ 扣费·非订单推送（运费等）
+  - prehold（预扣·不入账）：扣费·订单推送 = 推单时的材料费冻结
+  - refund（退费·条件入账）：feeType=退费/预扣退费，**仅当该 tid 存在实扣记录才冲抵**（推送即取消的单：预扣未入账→退费也不入账，净 0）
+  - exclude（排除）：充值类（运营方在方果充值）
+  - unknown（未知类型）：保守跳过不入账，管理员账单可见
+- **推单时**：不扣费，仅插入 push_records（fee_applied=false，UNIQUE 幂等防重复计费）
+- **定时日结**：每天 00:00（Asia/Shanghai，server.ts node-cron）执行 `runDailySettlement()`：
+  1. 同步最近 5 天流水 upsert 进 fangguo_transactions（id 幂等，容忍补录/补跑）
+  2. 结算所有账期 ≤ 昨天 的未结算数据：每用户每天 = Σ实扣 + Σ有效退费 + 0.5×当日推单数，写一条 consume 流水（描述前缀「日结 YYYY-MM-DD」），乐观锁扣余额（3 次重试，**允许负余额**）
+  3. 幂等三重保障：日结流水描述前缀检查（同用户同日已结则只补标记）+ per-user 锁 + 余额条件更新
+  4. 未归属流水（storeName 未匹配 shops）不入账，管理端告警可见；店铺分配后次日自动补账
+- **账期归属**：按 transactionTime 的上海自然日（材运费发货滞后出 → 顺延到扣款日账上，不回填推送日）
 - **负余额拦截**：balance < 0 时 `blocked=true`，推单接口返回 403，直到管理员补调
-- **配额预检**：availableQuota = floor(balance / 0.5) - 今日未结算单数，推单前校验
+- **配额预检**：availableQuota = floor(balance / 0.5) - 今日未结算单数（仅约束 0.5 服务费；材运费按日结事后扣，存在单日敞口，靠负余额拦截兜底）
 
 ## 方果平台对接（实时透传架构）
 
@@ -119,7 +132,8 @@
   - `fetchLiveOrders(days)`：tidList 分页拉取（pageSize 100，上限 500 单）→ detail 并发拉取（批次 8，Promise.allSettled 容错）→ 按 pay_time 倒序
   - 60 秒全局缓存（globalThis.__fgLiveCache，多用户共享，缓存 key=days:startOfToday）
   - `filterByShops(orders, shopNames)`：按 shops 表店铺名精确匹配 store_name
-- `src/lib/push-billing.ts` - 日结计费模块（settleUser / getPushBillingStats / recordPushes）
+- `src/lib/push-billing.ts` - 推单计费模块（getPushBillingStats 配额 / recordPushes 幂等记录 / getUserShopNames）
+- `src/lib/daily-settlement.ts` - 日结核心（syncTransactionLines 流水同步5天窗口 / settleDueDays 定时结算 / classifyLine 流水分类 / runDailySettlement 入口，与手动触发共用全局锁）
 
 **修改商家编码**（待整理/待推送订单，`/order/saveProduct`）：
 - `src/lib/fangguo.ts` 内封装：`getMaterialColors(factoryId)`（材质→颜色级联）、`getMerchantCodeOptions()`（型号/图号聚合）、`saveProduct()`
@@ -137,7 +151,7 @@
 
 **店铺过滤规则**：detail 仅含 storeName（无 shopId），按 shops 表 shop_name 精确匹配；用户无店铺时返回 noShop=true（前端提示联系管理员分配）
 
-**已移除**：定时同步调度器（fangguo-sync.ts）、订单落库、解码（batch-decode/[id]/decode）、商品管理、模拟数据（demo/seed）；遗留表 orders/products 已从数据库删除
+**已移除**：订单落库定时同步（fangguo-sync.ts）、订单落库、解码（batch-decode/[id]/decode）、商品管理、模拟数据（demo/seed）；遗留表 orders/products 已从数据库删除。现行定时任务仅一个：日结结算（node-cron，见 src/lib/daily-settlement.ts）
 
 ## 鉴权方式（自建账号密码认证）
 
@@ -173,6 +187,8 @@
 | POST | /api/admin/adjust-balance | 调整用户余额（body: {userId, amount, description}，正充负扣） | 管理员 |
 | GET | /api/admin/transactions | 全局流水记录 | 管理员 |
 | GET | /api/admin/push-records | 推单日账单（days 1-31，用户×日期聚合+汇总） | 管理员 |
+| POST | /api/admin/settlement/run | 手动触发日结（同步流水+结算，与定时任务等价互斥） | 管理员 |
+| GET | /api/admin/settlement/records | 日结账单（days 1-31，用户×账期：推单数/推单费/材运费/退费/合计/结算状态） | 管理员 |
 | GET | /api/admin/fangguo/config | 方果 API KEY 配置（脱敏） | 管理员 |
 | POST | /api/admin/fangguo/config | 保存/验证方果 API KEY | 管理员 |
 | GET | /api/admin/fangguo/shops | 方果店铺列表（含分配状态） | 管理员 |

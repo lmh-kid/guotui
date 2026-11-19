@@ -50,7 +50,8 @@ import {
   Link2,
   Store,
   CalendarDays,
-  Send,
+  PlayCircle,
+  CircleDollarSign,
   KeyRound,
   Trash2,
 } from 'lucide-react';
@@ -98,21 +99,42 @@ interface FangguoShopRow {
   assignedUserId: string | null;
 }
 
-interface PushRecordRow {
+interface SettlementRow {
   user_id: string;
-  email: string;
-  push_date: string;
-  total_count: number;
-  unsettled_count: number;
-  amount: number;
-  unsettled_amount: number;
+  account: string;
+  date: string;
+  push_count: number;
+  push_fee: number;
+  charge: number; // 实扣合计（负数）
+  refund: number; // 有效退费（正数）
+  material_freight: number; // 材运费净额
+  total: number; // 日结总金额（负=扣费）
+  allSettled: boolean;
+  lineCount: number;
 }
 
-interface PushSummary {
-  totalCount: number;
-  unsettledCount: number;
+interface SettlementSummary {
   totalAmount: number;
-  unsettledAmount: number;
+  totalPush: number;
+  totalMaterialFreight: number;
+  unsettledGroups: number;
+  unassignedLines: number;
+  unassignedStores: string[];
+}
+
+interface SettlementRunResult {
+  success?: boolean;
+  summary?: {
+    syncedLines: number;
+    newLines: number;
+    unassigned: number;
+    unknown: number;
+    settledUsers: number;
+    settledAmount: number;
+    skippedUsers: number;
+    errors: string[];
+  };
+  error?: string;
 }
 
 export default function AdminPage() {
@@ -166,11 +188,12 @@ export default function AdminPage() {
   const [fgShops, setFgShops] = useState<FangguoShopRow[]>([]);
   const [fgShopsLoading, setFgShopsLoading] = useState(false);
 
-  // 推单日账单
-  const [pushRecords, setPushRecords] = useState<PushRecordRow[]>([]);
-  const [pushSummary, setPushSummary] = useState<PushSummary | null>(null);
-  const [prLoading, setPrLoading] = useState(false);
-  const [prDays, setPrDays] = useState(7);
+  // 日结账单（材运费 + 0.5×推单数，每天 00:00 定时结算）
+  const [settlementRecords, setSettlementRecords] = useState<SettlementRow[]>([]);
+  const [settlementSummary, setSettlementSummary] = useState<SettlementSummary | null>(null);
+  const [stLoading, setStLoading] = useState(false);
+  const [stDays, setStDays] = useState(7);
+  const [stRunLoading, setStRunLoading] = useState(false);
 
   // 检查管理员权限
   useEffect(() => {
@@ -459,20 +482,51 @@ export default function AdminPage() {
     }
   };
 
-  const loadPushRecords = useCallback(async (days = 7) => {
-    setPrLoading(true);
+  const loadSettlementRecords = useCallback(async (days = 7) => {
+    setStLoading(true);
     try {
-      const res = await apiRequest<{ list: PushRecordRow[]; summary: PushSummary }>(
-        `/api/admin/push-records?days=${days}`
+      const res = await apiRequest<{ list: SettlementRow[]; summary: SettlementSummary }>(
+        `/api/admin/settlement/records?days=${days}`
       );
-      setPushRecords(res.list || []);
-      setPushSummary(res.summary || null);
+      setSettlementRecords(res.list || []);
+      setSettlementSummary(res.summary || null);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '加载推单记录失败');
+      toast.error(err instanceof Error ? err.message : '加载日结账单失败');
     } finally {
-      setPrLoading(false);
+      setStLoading(false);
     }
   }, []);
+
+  const runSettlementNow = async () => {
+    setStRunLoading(true);
+    try {
+      const res = await apiRequest<SettlementRunResult>('/api/admin/settlement/run', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      if (res.summary) {
+        const s = res.summary;
+        const parts = [
+          `同步流水 ${s.syncedLines} 条（新增 ${s.newLines}）`,
+          `结算 ${s.settledUsers} 组`,
+          s.settledAmount !== 0 ? `金额 ¥${s.settledAmount.toFixed(2)}` : '',
+          s.skippedUsers > 0 ? `幂等跳过 ${s.skippedUsers} 组` : '',
+        ].filter(Boolean);
+        toast.success(`日结完成：${parts.join('，')}`);
+        if (s.unassigned > 0) {
+          toast.warning(`${s.unassigned} 条流水店铺未分配用户，未入账`);
+        }
+        if (s.errors?.length) {
+          toast.error(`部分错误：${s.errors[0]}`);
+        }
+      }
+      await loadSettlementRecords(stDays);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '日结执行失败');
+    } finally {
+      setStRunLoading(false);
+    }
+  };
 
   const refreshFangguo = async () => {
     await Promise.all([loadFangguoConfig(), loadFangguoShops()]);
@@ -480,9 +534,9 @@ export default function AdminPage() {
 
   useEffect(() => {
     if (isAdmin) {
-      loadPushRecords(7);
+      loadSettlementRecords(7);
     }
-  }, [isAdmin, loadPushRecords]);
+  }, [isAdmin, loadSettlementRecords]);
 
   if (loading) {
     return (
@@ -523,7 +577,7 @@ export default function AdminPage() {
           <TabsList>
             <TabsTrigger value="users">用户管理</TabsTrigger>
             <TabsTrigger value="transactions">流水记录</TabsTrigger>
-            <TabsTrigger value="push-records">推单记录</TabsTrigger>
+            <TabsTrigger value="settlement">日结账单</TabsTrigger>
             <TabsTrigger value="fangguo">平台对接</TabsTrigger>
           </TabsList>
 
@@ -771,8 +825,8 @@ export default function AdminPage() {
             </Card>
           </TabsContent>
 
-          {/* 推单记录 Tab */}
-          <TabsContent value="push-records" className="space-y-4">
+          {/* 日结账单 Tab */}
+          <TabsContent value="settlement" className="space-y-4">
             <div className="flex items-center gap-3 flex-wrap">
               <div className="flex items-center gap-1 border border-gray-200 rounded-md p-1">
                 <CalendarDays className="w-4 h-4 text-gray-400 ml-1.5" />
@@ -780,76 +834,106 @@ export default function AdminPage() {
                   <button
                     key={d}
                     onClick={() => {
-                      setPrDays(d);
-                      loadPushRecords(d);
+                      setStDays(d);
+                      loadSettlementRecords(d);
                     }}
                     className={`px-3 py-1 text-sm rounded transition-colors ${
-                      prDays === d ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-100'
+                      stDays === d ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-100'
                     }`}
                   >
                     近{d}天
                   </button>
                 ))}
               </div>
-              <Button variant="outline" size="sm" onClick={() => loadPushRecords(prDays)} disabled={prLoading}>
-                <RefreshCw className={`w-4 h-4 mr-2 ${prLoading ? 'animate-spin' : ''}`} />
+              <Button variant="outline" size="sm" onClick={() => loadSettlementRecords(stDays)} disabled={stLoading}>
+                <RefreshCw className={`w-4 h-4 mr-2 ${stLoading ? 'animate-spin' : ''}`} />
                 刷新
               </Button>
-              {pushSummary && (
+              <Button size="sm" onClick={runSettlementNow} disabled={stRunLoading}>
+                {stRunLoading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <PlayCircle className="w-4 h-4 mr-2" />}
+                立即执行日结
+              </Button>
+              {settlementSummary && (
                 <div className="text-sm text-gray-500 ml-auto flex gap-6">
                   <span>
-                    推单合计 <span className="font-semibold text-gray-900">{pushSummary.totalCount} 单</span>
+                    推单合计 <span className="font-semibold text-gray-900">{settlementSummary.totalPush} 单</span>
                   </span>
                   <span>
-                    金额合计 <span className="font-semibold text-gray-900">¥{pushSummary.totalAmount.toFixed(2)}</span>
+                    材运费合计 <span className="font-semibold text-gray-900">¥{settlementSummary.totalMaterialFreight.toFixed(2)}</span>
                   </span>
                   <span>
-                    未结算 <span className="font-semibold text-amber-600">¥{pushSummary.unsettledAmount.toFixed(2)}</span>
-                    <span className="text-xs text-gray-400">（{pushSummary.unsettledCount} 单，次日自动结算）</span>
+                    日结总额 <span className="font-semibold text-gray-900">¥{settlementSummary.totalAmount.toFixed(2)}</span>
                   </span>
                 </div>
               )}
             </div>
 
+            <p className="text-xs text-gray-400">
+              每天凌晨 00:00（北京时间）自动结算：用户应付 = 方果实扣材运费 + ¥0.50×推单数；退费自动冲抵（仅冲抵已实扣部分）；材运费按扣款日归属账期（发货滞后费用顺延）。
+            </p>
+
+            {settlementSummary && settlementSummary.unassignedLines > 0 && (
+              <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                <div>
+                  {settlementSummary.unassignedLines} 条流水店铺未分配用户（未入账）：
+                  <span className="font-medium">{settlementSummary.unassignedStores.join('、')}</span>
+                  <span className="text-xs text-amber-600">（到「平台对接」中分配店铺后，次日日结自动补账）</span>
+                </div>
+              </div>
+            )}
+
             <Card>
               <CardHeader>
                 <CardTitle className="text-base flex items-center gap-2">
-                  <Send className="w-4 h-4 text-blue-600" />
-                  推单日账单（按用户 × 日期，¥0.50/单）
+                  <CircleDollarSign className="w-4 h-4 text-blue-600" />
+                  日结账单（按用户 × 账期，材运费 + ¥0.50/单）
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                {prLoading ? (
+                {stLoading ? (
                   <div className="flex items-center justify-center h-32">
                     <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
                   </div>
-                ) : pushRecords.length === 0 ? (
-                  <p className="text-center text-gray-500 py-8">近 {prDays} 天暂无推单记录</p>
+                ) : settlementRecords.length === 0 ? (
+                  <p className="text-center text-gray-500 py-8">近 {stDays} 天暂无日结数据</p>
                 ) : (
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>日期</TableHead>
+                        <TableHead>账期</TableHead>
                         <TableHead>用户</TableHead>
                         <TableHead className="text-right">推单数</TableHead>
-                        <TableHead className="text-right">金额</TableHead>
+                        <TableHead className="text-right">推单费</TableHead>
+                        <TableHead className="text-right">材运费</TableHead>
+                        <TableHead className="text-right">退费冲抵</TableHead>
+                        <TableHead className="text-right">日结合计</TableHead>
                         <TableHead>结算状态</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {pushRecords.map((r) => (
-                        <TableRow key={`${r.user_id}-${r.push_date}`}>
-                          <TableCell className="text-gray-700">{r.push_date}</TableCell>
-                          <TableCell className="font-medium">{displayAccountName(r.email)}</TableCell>
-                          <TableCell className="text-right">{r.total_count} 单</TableCell>
-                          <TableCell className="text-right font-semibold">¥{r.amount.toFixed(2)}</TableCell>
+                      {settlementRecords.map((r) => (
+                        <TableRow key={`${r.user_id}-${r.date}`}>
+                          <TableCell className="text-gray-700">{r.date}</TableCell>
+                          <TableCell className="font-medium">{displayAccountName(r.account)}</TableCell>
+                          <TableCell className="text-right">{r.push_count} 单</TableCell>
+                          <TableCell className="text-right">¥{r.push_fee.toFixed(2)}</TableCell>
+                          <TableCell className="text-right">¥{r.material_freight.toFixed(2)}</TableCell>
+                          <TableCell className="text-right text-green-600">
+                            {r.refund !== 0 ? `+¥${r.refund.toFixed(2)}` : '—'}
+                          </TableCell>
+                          <TableCell
+                            className={`text-right font-semibold ${r.total < 0 ? 'text-red-600' : 'text-green-600'}`}
+                          >
+                            ¥{r.total.toFixed(2)}
+                          </TableCell>
                           <TableCell>
-                            {r.unsettled_count > 0 ? (
-                              <Badge className="bg-amber-100 text-amber-700">
-                                未结算 {r.unsettled_count} 单（¥{r.unsettled_amount.toFixed(2)}）
-                              </Badge>
-                            ) : (
+                            {r.allSettled ? (
                               <Badge className="bg-green-100 text-green-700">已结算</Badge>
+                            ) : (
+                              <Badge className="bg-amber-100 text-amber-700">
+                                待结算{r.date >= new Date().toISOString().slice(0, 10) ? '（今日，次日 00:00）' : '（次日 00:00 自动）'}
+                              </Badge>
                             )}
                           </TableCell>
                         </TableRow>

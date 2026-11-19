@@ -1,14 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-utils';
 import { fetchLiveOrders, filterByShops, LiveOrder } from '@/lib/fangguo-live';
-import { settleUser, getPushBillingStats, getUserShopNames } from '@/lib/push-billing';
+import { getPushBillingStats, getUserShopNames } from '@/lib/push-billing';
 import { FangguoApiError, warmFactoryModelPicOptions } from '@/lib/fangguo';
 
 /**
  * 订单列表（实时透传方果 API，不落库）
- * - 惰性触发昨日推单日结算
  * - 按用户分配的店铺过滤
  * - 60s 全局缓存（多用户共享同一份方果数据）
+ * - 日结由定时任务（每天 00:00）执行，见 src/lib/daily-settlement.ts
  *
  * Query: page, pageSize, status, keyword, days(1今天/3近3天/7近7天)
  */
@@ -29,10 +29,7 @@ export async function GET(req: NextRequest) {
   const days: 1 | 3 | 7 = daysRaw === 3 || daysRaw === 7 ? daysRaw : 1;
 
   try {
-    // 1. 惰性日结算（昨日及更早的推单扣费）
-    await settleUser(user.id);
-
-    // 2. 计费状态（余额/配额/禁推）
+    // 1. 计费状态（余额/配额/禁推）
     const [billing, shopNames] = await Promise.all([
       getPushBillingStats(user.id),
       getUserShopNames(user.id),

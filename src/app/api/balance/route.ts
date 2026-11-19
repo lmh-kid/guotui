@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser, ensureUserBalance, touchSession } from '@/lib/auth-utils';
 import { getSupabaseAdminClient } from '@/storage/database/supabase-client';
-import { settleUser } from '@/lib/push-billing';
 
 /**
  * 获取用户余额
- * 顺带触发惰性日结算（跨天后首次访问自动结算昨日推单扣费）
+ * 日结由定时任务（每天 00:00）执行，见 src/lib/daily-settlement.ts
  */
 export async function GET(req: NextRequest) {
   const token = req.headers.get('x-session');
@@ -20,11 +19,6 @@ export async function GET(req: NextRequest) {
   try {
     // 确保余额记录存在
     await ensureUserBalance(user.id);
-
-    // 惰性日结算（昨日推单扣费；失败不阻塞余额查询）
-    await settleUser(user.id).catch((e) =>
-      console.error('[balance] settle failed:', e instanceof Error ? e.message : e)
-    );
 
     const { data, error } = await client
       .from('user_balances')

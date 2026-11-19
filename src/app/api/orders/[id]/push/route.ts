@@ -6,14 +6,15 @@ import {
   isVoidedOrder,
   FangguoApiError,
 } from "@/lib/fangguo";
-import { settleUser, getPushBillingStats, recordPushes, getUserShopNames } from "@/lib/push-billing";
+import { getPushBillingStats, recordPushes, getUserShopNames } from "@/lib/push-billing";
 import { PUSH_FEE } from "@/lib/billing";
 
 /**
  * 单条订单推单（实时透传，订单不落库）
  * 路由参数 id = 方果平台订单号 tid
  *
- * 流程: 惰性日结算 → 负余额禁推 → 实时校验归属/状态 → 配额预检 → 方果推单 → 记录 push_records
+ * 流程: 负余额禁推 → 实时校验归属/状态 → 配额预检 → 方果推单 → 记录 push_records
+ * （日结由定时任务每天 00:00 执行，见 src/lib/daily-settlement.ts）
  */
 export async function POST(
   req: NextRequest,
@@ -29,10 +30,7 @@ export async function POST(
   const { id: tid } = await params;
 
   try {
-    // 1. 惰性日结算
-    await settleUser(user.id);
-
-    // 2. 计费状态
+    // 1. 计费状态
     const billing = await getPushBillingStats(user.id);
     if (billing.blocked) {
       return NextResponse.json(
@@ -41,19 +39,19 @@ export async function POST(
       );
     }
 
-    // 3. 店铺归属
+    // 2. 店铺归属
     const shopNames = await getUserShopNames(user.id);
     if (shopNames.length === 0) {
       return NextResponse.json({ error: "您暂未分配店铺，请联系管理员" }, { status: 403 });
     }
 
-    // 4. 实时拉取订单详情校验
+    // 3. 实时拉取订单详情校验
     const detail = await fetchFangguoOrderDetail(tid);
     if (!shopNames.includes(detail.storeName ?? "")) {
       return NextResponse.json({ error: "订单不存在或不属于您的店铺" }, { status: 404 });
     }
 
-    // 4.5 已作废拦截（平台交易关闭的单 dfStatus 可能仍为 1，必须显式拦截）
+    // 3.5 已作废拦截（平台交易关闭的单 dfStatus 可能仍为 1，必须显式拦截）
     if (isVoidedOrder(detail)) {
       return NextResponse.json(
         { error: `订单已作废（平台状态「${detail.outerOrderStatusDesc || "交易关闭"}」），无法推送` },
@@ -76,7 +74,7 @@ export async function POST(
       );
     }
 
-    // 5. 配额预检
+    // 4. 配额预检
     if (billing.availableQuota < 1) {
       return NextResponse.json(
         {
@@ -86,7 +84,7 @@ export async function POST(
       );
     }
 
-    // 6. 调方果推单
+    // 5. 调方果推单
     try {
       await pushFangguoOrders([tid]);
     } catch (e) {
@@ -94,7 +92,7 @@ export async function POST(
       return NextResponse.json({ error: `方果推单失败: ${msg}` }, { status: 400 });
     }
 
-    // 7. 记录推单（日结算依据）
+    // 6. 记录推单（日结算依据）
     await recordPushes(user.id, [tid]);
 
     const newBilling = await getPushBillingStats(user.id);
