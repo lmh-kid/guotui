@@ -13,7 +13,9 @@ import { PUSH_FEE } from '@/lib/billing';
  * - 材料费：不分 feeType——有实扣（预扣转实扣）取实扣，未发货回退预扣（订单推送冻结额），
  *   退费统一冲抵进材料费
  * - 运费：发货实扣，退费冲抵
- * - 手动扣费：每笔订单 ¥0.50 推单服务费，展示层合成不入库（实际扣款在日结统一结算）
+ * - 手动扣费：每笔订单 ¥0.50 推单服务费，按推送日归属账期（昨日推送今日发货的单记昨日，
+ *   含方果后台直推；推送日按「扣费·订单推送」预扣流水最早 settle_date 判定），
+ *   展示层合成不入库（实际扣款在日结统一结算）
  * - 合计 = 材料费 + 运费 + 手动扣费
  *
  * 数据源均为本地库已同步数据（日结任务/手动结算时同步，近 7 天窗口）
@@ -149,11 +151,38 @@ export async function GET(req: NextRequest) {
       // unknown 不入账（与日结口径一致），可在每日对账中查看
     }
 
-    // 3. 生成行：材料费不分 feeType（有实扣取实扣，未发货回退预扣，退费冲抵）；
-    //    每笔订单加 ¥0.50 手动扣费（仅展示）；合计 = 材料费 + 运费 + 手动扣费
+    // 3. 推单服务费归属推送日账期：查窗口内订单的「扣费·订单推送」预扣流水（推送
+    //    动作），取每单最早 settle_date（=首次推送日）。昨日推送今日发货的单，其
+    //    ¥0.50 记昨日账上，与日结口径完全对齐（消除跨日错位）
+    const preholdDateByTid = new Map<string, string>();
+    const tids = [...accMap.keys()];
+    for (let i = 0; i < tids.length; i += 50) {
+      const batch = tids.slice(i, i + 50);
+      const { data: preholds, error: preErr } = await supabase
+        .from('fangguo_transactions')
+        .select('tid, settle_date')
+        .eq('user_id', user.id)
+        .eq('kind', 'prehold')
+        .in('tid', batch);
+      if (preErr) throw preErr;
+      for (const ph of preholds ?? []) {
+        const tid = String(ph.tid ?? '');
+        const d = String(ph.settle_date ?? '');
+        if (!tid || !d) continue;
+        const prev = preholdDateByTid.get(tid);
+        if (!prev || d < prev) preholdDateByTid.set(tid, d); // 取最早 = 首次推送日
+      }
+    }
+
+    // 4. 生成行：材料费不分 feeType（有实扣取实扣，未发货回退预扣，退费冲抵）；
+    //    每笔订单加 ¥0.50 手动扣费（仅展示，按推送日归属账期）；合计 = 材料费 + 运费 + 手动扣费
     const round2 = (x: number) => Math.round(x * 100) / 100;
     const list: OrderRow[] = [];
     for (const [tid, a] of accMap) {
+      // 推单服务费 ¥0.50 归属推送日账期：推送日在查询窗口内才计（含方果后台直推），
+      // 昨日推送今日发货的单的 0.5 记昨日，不重复计入今日
+      const preholdDate = preholdDateByTid.get(tid);
+      const manual = preholdDate && preholdDate >= since ? PUSH_FEE : 0;
       const row: OrderRow = {
         order_no: tid,
         time: a.time,
@@ -161,7 +190,7 @@ export async function GET(req: NextRequest) {
         recharge: 0,
         material: round2((a.chargeMat > 0 ? a.chargeMat : a.preholdMat) - a.refundMat),
         freight: round2(a.chargeFrt - a.refundFrt),
-        manual: PUSH_FEE,
+        manual,
         material_refund: round2(a.refundMat),
         freight_refund: round2(a.refundFrt),
         total: 0,
@@ -172,7 +201,7 @@ export async function GET(req: NextRequest) {
     list.push(...noOrderRows);
     list.sort((a, b) => (a.time < b.time ? 1 : a.time > b.time ? -1 : 0));
 
-    // 4. 汇总
+    // 5. 汇总
     let totalMaterial = 0;
     let totalFreight = 0;
     let totalRefund = 0;
@@ -184,7 +213,7 @@ export async function GET(req: NextRequest) {
       totalFreight += r.freight;
       totalRefund += r.material_refund + r.freight_refund;
       totalManual += r.manual;
-      if (r.order_no !== '') orderCount += 1;
+      if (r.manual > 0) orderCount += 1; // 推单数 = 计入服务费的单（推送日归属窗口内）
       if (r.order_no !== '' || r.recharge > 0) totalAmount += r.total;
     }
 

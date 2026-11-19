@@ -113,6 +113,7 @@
   - exclude（排除）：充值类（运营方在方果充值）
   - unknown（未知类型）：保守跳过不入账，管理员账单可见
 - **推单时**：不扣费，仅插入 push_records（fee_applied=false，UNIQUE 幂等防重复计费）
+- **推单服务费口径（三处统一：settleUserDay / 钱包每日扣款 / 管理端日结账单）**：按**当天全部推送订单**计（含方果后台直推）——用方果「扣费·订单推送」prehold 预扣流水去重 tid 统计（每单一条，重推/取消重推去重算 1 单）；当天流水未同步时由 push_records.order_no 兜底合并（`pushedTids = new Set<string>()`，`pushCount = pushedTids.size`）。push_records 仍记录系统推单（UNIQUE 幂等）+ 参与结算标记，但不再单独作为计费依据；资金明细页 0.5 服务费按推送日归属账期（查窗口内订单最早 prehold settle_date 构建 preholdDateByTid，50 分批 .in），单日视图与日结完全对齐
 - **定时日结（日清日结）**：每天 00:00（Asia/Shanghai，server.ts node-cron）执行 `runDailySettlement()`：
   1. 同步最近 7 天流水 upsert 进 fangguo_transactions（id 幂等，容忍补录/补跑；settled 标记不在 upsert 列，不被覆盖）
   2. 结算所有账期 ≤ 今天（settleCutoff=today，0 点跑即昨日账期）的未结算数据，**真实扣余额**：每用户每账期 = Σ实扣 + Σ有效退费 + 0.5×当日推单数，写一条 consume 流水（描述「日结 YYYY-MM-DD：推单 X 单 ¥Y + 材运费 ¥Z」），乐观锁扣余额（3 次重试，**允许负余额**），total_consume 累加绝对值

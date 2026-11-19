@@ -9,7 +9,8 @@ import { PUSH_FEE } from '@/lib/billing';
  * GET /api/wallet/daily-settlement?days=31
  *
  * 每个账期一行：
- * - push_count / push_fee: 当日推单数与 0.5 服务费
+ * - push_count / push_fee: 当日全部推送订单数（含方果直推，按「扣费·订单推送」预扣流水去重 tid；
+ *   当天流水未同步时由 push_records 兜底）与 0.5 服务费
  * - charge / refund / material_freight: 方果实扣材运费与有效退费（退费仅冲抵已实扣部分）
  * - total: 当日应付合计（负=扣费）
  * - settled / settled_amount / balance_after: 日结状态与实际扣款流水（wallet_transactions「日结 YYYY-MM-DD」）
@@ -38,10 +39,10 @@ export async function GET(req: NextRequest) {
       .order('settle_date', { ascending: false });
     if (linesErr) throw linesErr;
 
-    // 2. 推单记录（本用户）
+    // 2. 推单记录（本用户；当天流水未同步时的兜底计数来源）
     const { data: pushes, error: pushErr } = await supabase
       .from('push_records')
-      .select('id, push_date, fee_applied')
+      .select('id, push_date, fee_applied, order_no')
       .eq('user_id', user.id)
       .gte('push_date', since);
     if (pushErr) throw pushErr;
@@ -86,12 +87,12 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // 5. 按日聚合
+    // 5. 按日聚合（推单数口径：当天全部推送订单，含方果直推）
     const groups = new Map<
       string,
       {
         date: string;
-        push_count: number;
+        pushedTids: Set<string>;
         charge: number;
         refund: number;
         allSettled: boolean;
@@ -100,13 +101,19 @@ export async function GET(req: NextRequest) {
     const getGroup = (date: string) => {
       let g = groups.get(date);
       if (!g) {
-        g = { date, push_count: 0, charge: 0, refund: 0, allSettled: true };
+        g = { date, pushedTids: new Set(), charge: 0, refund: 0, allSettled: true };
         groups.set(date, g);
       }
       return g;
     };
 
     for (const l of lines ?? []) {
+      if (l.kind === 'prehold' && l.tid) {
+        // 「扣费·订单推送」预扣流水 = 当天推送动作（每单一条，重推去重）
+        const g = getGroup(l.settle_date);
+        g.pushedTids.add(l.tid);
+        if (!l.settled) g.allSettled = false;
+      }
       if (l.kind !== 'charge' && l.kind !== 'refund') continue;
       const g = getGroup(l.settle_date);
       const amount = parseFloat(l.processed_amount as string);
@@ -117,19 +124,22 @@ export async function GET(req: NextRequest) {
       if (!l.settled) g.allSettled = false;
     }
     for (const p of pushes ?? []) {
+      // 兜底：当天流水尚未同步时，系统推单记录仍计入（直推单靠流水，Set 去重合并）
+      if (!p.order_no) continue;
       const g = getGroup(p.push_date);
-      g.push_count += 1;
+      g.pushedTids.add(p.order_no);
       if (!p.fee_applied) g.allSettled = false;
     }
 
     const list = [...groups.values()]
       .map((g) => {
+        const pushCount = g.pushedTids.size;
         const materialFreight = parseFloat((g.charge + g.refund).toFixed(2));
-        const pushFee = parseFloat((g.push_count * PUSH_FEE).toFixed(2));
+        const pushFee = parseFloat((pushCount * PUSH_FEE).toFixed(2));
         const settled = settledByDate.get(g.date);
         return {
           date: g.date,
-          push_count: g.push_count,
+          push_count: pushCount,
           push_fee: pushFee,
           charge: parseFloat(g.charge.toFixed(2)),
           refund: parseFloat(g.refund.toFixed(2)),

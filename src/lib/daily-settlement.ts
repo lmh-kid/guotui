@@ -14,7 +14,8 @@ import {
  *   （「扣费·订单推送」是预扣冻结，不入账）
  * - 退费冲抵 = 「退费」流水，但仅当该 tid 存在实扣记录（推送即取消的单：
  *   预扣未入账 → 退费也不入账，净 0）
- * - 推单服务费 = 0.5 × 当日 push_records 单数
+ * - 推单服务费 = 0.5 × 当日全部推送订单数（含方果后台直推，按「扣费·订单推送」
+ *   预扣流水去重 tid 统计；当天流水未同步时由 push_records 兜底合并）
  * - 账期按 transactionTime 的上海自然日归属（方果账单口径：订单 10 号出、
  *   运费 12 号才出但仍记 10 号账上）
  *
@@ -452,7 +453,7 @@ async function settleUserDay(
 
   const { data: dayPushes, error: pErr } = await supabase
     .from("push_records")
-    .select("id, fee_applied")
+    .select("id, fee_applied, order_no")
     .eq("user_id", g.user)
     .eq("push_date", g.date);
   if (pErr) throw new Error(`读取推单记录失败: ${pErr.message}`);
@@ -481,7 +482,17 @@ async function settleUserDay(
     materialFreight = 0;
     refundTotal = 0;
   }
-  const pushCount = (dayPushes ?? []).length;
+  // 推单数口径：当天全部推送订单（含方果后台直推）——按方果「扣费·订单推送」
+  // 预扣流水去重 tid 统计（推送必然产生预扣冻结）；当天流水尚未同步时由
+  // 系统推单记录（push_records.order_no）兜底合并，重推/取消重推同一单去重算 1 单
+  const pushedTids = new Set<string>();
+  for (const l of dayLines ?? []) {
+    if (l.kind === "prehold" && l.tid) pushedTids.add(l.tid);
+  }
+  for (const p of dayPushes ?? []) {
+    if (p.order_no) pushedTids.add(p.order_no);
+  }
+  const pushCount = pushedTids.size;
   const pushFee = parseFloat((pushCount * PUSH_FEE).toFixed(2)); // 正数（展示用）
   const totalDue = parseFloat((materialFreight + refundTotal - pushFee).toFixed(2)); // 负 = 应付
 
