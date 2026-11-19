@@ -41,7 +41,7 @@ interface Summary {
 
 const fmtTime = (t?: string) => (t ? t.slice(0, 19).replace('T', ' ') : '-');
 
-export function FangguoLinesTab() {
+export default function FangguoLinesTab() {
   const [rows, setRows] = useState<OrderRow[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [days, setDays] = useState(1); // 默认展示当天
