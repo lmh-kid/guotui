@@ -105,8 +105,8 @@ interface SettlementRow {
   date: string;
   push_count: number;
   push_fee: number;
-  charge: number; // 实扣合计（负数）
-  refund: number; // 有效退费（正数）
+  charge: number; // 入账扣费合计（含预扣，负数；材料费按订单取预扣/实扣较大者）
+  refund: number; // 退费（正数，无条件冲抵）
   material_freight: number; // 材运费净额
   total: number; // 日结总金额（负=扣费）
   allSettled: boolean;
@@ -126,7 +126,8 @@ interface FangguoDailyRow {
   date: string;
   charge: number; // 方果侧实扣合计（负数，含未归属）
   refund: number; // 方果侧退费合计（正数，不过滤有效性）
-  net: number; // 净额 = charge + refund
+  prehold: number; // 方果侧预扣合计（负数，推单冻结额）
+  net: number; // 净额 = charge + refund + prehold
   unassignedCount: number; // 未归属流水条数
   lines: number; // 总流水条数
 }
@@ -724,6 +725,7 @@ export default function AdminPage() {
                       <TableRow>
                         <TableHead>账期</TableHead>
                         <TableHead className="text-right">实扣合计</TableHead>
+                        <TableHead className="text-right">预扣合计</TableHead>
                         <TableHead className="text-right">退费合计</TableHead>
                         <TableHead className="text-right">净额</TableHead>
                         <TableHead className="text-right">未归属条数</TableHead>
@@ -735,6 +737,9 @@ export default function AdminPage() {
                         <TableRow key={d.date}>
                           <TableCell className="text-gray-700">{d.date}</TableCell>
                           <TableCell className="text-right text-red-600">¥{d.charge.toFixed(2)}</TableCell>
+                          <TableCell className="text-right text-amber-600">
+                            {d.prehold !== 0 ? `¥${d.prehold.toFixed(2)}` : '—'}
+                          </TableCell>
                           <TableCell className="text-right text-green-600">
                             {d.refund !== 0 ? `+¥${d.refund.toFixed(2)}` : '—'}
                           </TableCell>
@@ -755,7 +760,7 @@ export default function AdminPage() {
                   </Table>
                 )}
                 <p className="text-xs text-gray-400 mt-3">
-                  对账口径与方果账单一致（按流水记账日分日汇总，退费含全部退费记录）；「实扣合计」含未分配店铺的流水，与上方日结账单（仅已归属用户）的差异即未归属部分。
+                  对账口径与方果账单一致（按流水记账日分日汇总，退费含全部退费记录）。预扣为推单冻结额（即真实扣款，发货后转实扣不二次扣），按订单去重后的计费口径见上方日结账单（同一单预扣转实扣后不再重复计）。
                 </p>
               </CardContent>
             </Card>
@@ -939,7 +944,7 @@ export default function AdminPage() {
             </div>
 
             <p className="text-xs text-gray-400">
-              每天凌晨 00:00（北京时间）自动结算：用户应付 = 方果实扣材运费 + ¥0.50×推单数，实际扣除用户余额；退费自动冲抵（仅冲抵已实扣部分）。账期按方果记账日归属（滞后运费记在订单当日账上），结算后迟到到达的材运费会在下次日结时自动补扣/补退；账期满 7 天封账，之后金额不再变动，可与方果账单逐日核对。
+              每天凌晨 00:00（北京时间）自动结算：用户应付 = 方果材运费（材料费 + 运费，材料费含推单预扣——预扣即真实扣款，发货转实扣不二次扣，按订单取较大者）+ ¥0.50×当天全部推送订单数，实际扣除用户余额；退费自动冲抵。账期按方果记账日归属（滞后运费记在订单当日账上），结算后迟到到达的材运费会在下次日结时自动补扣/补退；账期满 7 天封账，之后金额不再变动，可与方果账单逐日核对。
             </p>
 
             {settlementSummary && settlementSummary.unassignedLines > 0 && (

@@ -10,10 +10,12 @@ import {
  * 日结结算模块（定时任务，每天 00:00 Asia/Shanghai 触发）
  *
  * 费用口径（用户每账期应付 = 材运费 + 推单服务费）:
- * - 材运费 = 方果「实扣」流水：预扣转实扣（材料费）+ 扣费·非订单推送（运费等）
- *   （「扣费·订单推送」是预扣冻结，不入账）
- * - 退费冲抵 = 「退费」流水，但仅当该 tid 存在实扣记录（推送即取消的单：
- *   预扣未入账 → 退费也不入账，净 0）
+ * - 材运费 = 材料费（预扣即扣款）+ 运费等实扣流水：
+ *   推单时「扣费·订单推送」预扣（prehold）即从方果账户真实扣款，发货时
+ *   「预扣转实扣」（charge）只是确认状态（实测 204/206 单条数金额 1:1 相等，
+ *   不二次扣款）。按订单 tid 聚合取「预扣总额 vs 实扣总额」绝对值较大者入账——
+ *   未发货计预扣（推单当天即扣，无敞口）、已转实扣计实扣，避免双计 / 漏计
+ * - 退费冲抵 = 「退费」流水无条件冲抵（预扣已入账，取消推送必须退回，净 0）
  * - 推单服务费 = 0.5 × 当日全部推送订单数（含方果后台直推，按「扣费·订单推送」
  *   预扣流水去重 tid 统计；当天流水未同步时由 push_records 兜底合并）
  * - 账期按 transactionTime 的上海自然日归属（方果账单口径：订单 10 号出、
@@ -55,7 +57,8 @@ export function classifyLine(line: FangguoTransactionLine): string {
     return "refund";
   }
   if (feeType === "扣费" || feeType === "ACTUAL_DEDUCTION" || feeType === "PRE_DEDUCTION") {
-    // 扣费·订单推送 = 推单时预扣材料费（冻结，非实际成本）；其余扣费（运费·打包发货等）为实扣
+    // 扣费·订单推送 = 推单时预扣材料费（真实扣款，发货后转实扣确认，不二次扣）；
+    // 其余扣费（运费·打包发货等）为实扣
     if (line.businessNode === "订单推送" || line.businessNode === "PUSH_ORDER") {
       return "prehold";
     }
@@ -375,33 +378,7 @@ export async function settleDueDays(): Promise<{
     return { settledUsers: 0, settledAmount: 0, skippedUsers: 0, errors: [] };
   }
 
-  // 4. 退费有效性预判：收集所有未结算 refund 涉及的 tid → 查这些 tid 是否有实扣记录
-  //    （settleUserDay 重算全量时也要做同样判断，这里的集合仅供过滤传入）
-  const refundTids = new Set<string>();
-  {
-    const { data: refundLines } = await supabase
-      .from("fangguo_transactions")
-      .select("tid")
-      .eq("kind", "refund")
-      .not("user_id", "is", null)
-      .gte("settle_date", dateAddDays(today, -SYNC_WINDOWS_DAYS));
-    for (const r of refundLines ?? []) if (r.tid) refundTids.add(r.tid);
-  }
-  const chargedTids = new Set<string>();
-  if (refundTids.size > 0) {
-    const tidList = Array.from(refundTids);
-    for (let i = 0; i < tidList.length; i += 50) {
-      const batch = tidList.slice(i, i + 50);
-      const { data: charged } = await supabase
-        .from("fangguo_transactions")
-        .select("tid")
-        .eq("kind", "charge")
-        .in("tid", batch);
-      for (const c of charged ?? []) if (c.tid) chargedTids.add(c.tid);
-    }
-  }
-
-  // 5. 逐组结算
+  // 4. 逐组结算
   let settledUsers = 0;
   let settledAmount = 0;
   let skippedUsers = 0;
@@ -409,9 +386,7 @@ export async function settleDueDays(): Promise<{
 
   for (const g of groups.values()) {
     try {
-      const result = await withUserLock(g.user, () =>
-        settleUserDay(g, chargedTids, startDate)
-      );
+      const result = await withUserLock(g.user, () => settleUserDay(g, startDate));
       if (result.skipped) {
         skippedUsers += 1;
       } else {
@@ -438,7 +413,6 @@ export async function settleDueDays(): Promise<{
  */
 async function settleUserDay(
   g: { user: string; date: string; lineIds: string[]; pushIds: string[] },
-  chargedTids: Set<string>,
   startDate: string | null
 ): Promise<{ amount: number; skipped: boolean }> {
   const supabase = await getSupabaseAdminClient();
@@ -446,7 +420,7 @@ async function settleUserDay(
   // 该账期全量数据（含已结算，用于重算应付）
   const { data: dayLines, error: lErr } = await supabase
     .from("fangguo_transactions")
-    .select("id, tid, kind, processed_amount, settled")
+    .select("id, tid, kind, processed_amount, settled, fee_name_type")
     .eq("user_id", g.user)
     .eq("settle_date", g.date);
   if (lErr) throw new Error(`读取账期流水失败: ${lErr.message}`);
@@ -467,15 +441,42 @@ async function settleUserDay(
   if (tErr) throw new Error(`读取日结流水失败: ${tErr.message}`);
 
   // ---- 重算全量应付（负 = 用户应付）----
-  let materialFreight = 0; // Σ实扣（负）
-  let refundTotal = 0; // Σ有效退费（正）
+  // 材料费口径（预扣即扣款）：方果推单时「扣费·订单推送」预扣（prehold）即从账户
+  // 真实扣钱，发货时「预扣转实扣」只是确认状态（实测 204/206 单条数金额 1:1 相等，
+  // 不二次扣款）。故按订单 tid 聚合，取「预扣总额」与「实扣总额」中绝对值较大者入账：
+  // - 未发货：计预扣（推单当天即扣，不再是敞口等发货）
+  // - 已转实扣：计实扣（与预扣相等时重算无差异；实扣调高时自动补差）
+  // - 仅有实扣（预扣流水在 7 天同步窗口外）：计实扣
+  let materialFreight = 0; // Σ入账扣费（负）：材料费按 tid 取 max + 运费等实扣
+  let refundTotal = 0; // Σ退费（正，无条件冲抵：预扣已入账，取消推送必须退回）
+  const matByTid = new Map<string, { prehold: number; charge: number }>();
   for (const l of dayLines ?? []) {
     const amount = parseFloat(l.processed_amount as string);
-    if (l.kind === "charge" && amount < 0) {
-      materialFreight += amount;
-    } else if (l.kind === "refund" && amount > 0 && l.tid && chargedTids.has(l.tid)) {
-      refundTotal += amount; // 退费仅冲抵已实扣部分
+    const abs = Math.abs(amount);
+    const name = String(l.fee_name_type ?? "");
+    const tid = l.tid ? String(l.tid) : "";
+    if (l.kind === "prehold" && amount < 0) {
+      // 材料费预扣（订单推送，实为真实扣款）
+      if (tid && name.includes("材料")) {
+        const a = matByTid.get(tid) ?? { prehold: 0, charge: 0 };
+        a.prehold += abs;
+        matByTid.set(tid, a);
+      }
+    } else if (l.kind === "charge" && amount < 0) {
+      if (tid && name.includes("材料")) {
+        const a = matByTid.get(tid) ?? { prehold: 0, charge: 0 };
+        a.charge += abs;
+        matByTid.set(tid, a);
+      } else {
+        materialFreight -= abs; // 运费等非材料实扣
+      }
+    } else if (l.kind === "refund" && amount > 0) {
+      refundTotal += amount; // 退费无条件冲抵（材料/运费退费统一回补）
     }
+  }
+  for (const a of matByTid.values()) {
+    // 预扣与实扣是同一笔钱的两个阶段：取绝对值较大者，避免双计 / 漏计
+    materialFreight -= Math.max(a.prehold, a.charge);
   }
   // 结算起始日保护：早于起始日的账期不追溯材运费（服务费照常）
   if (startDate && g.date < startDate) {

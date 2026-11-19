@@ -7,7 +7,7 @@
 ### 核心架构原则（重要）
 - **订单不落库**：订单数据在用户查询时实时从方果 API 拉取（透传），本地不存任何订单信息
 - **本地仅持久化**：用户信息（user_balances）、钱包流水（wallet_transactions）、推单计费记录（push_records）、方果资金流水（fangguo_transactions）、店铺分配（shops）、系统配置（system_configs）
-- **计费模式：日结（定时任务，真实扣余额）**：用户应付 = 方果实扣材运费 + 0.5×推单数。每天 00:00（Asia/Shanghai）定时结算昨日账期（`src/lib/daily-settlement.ts`，server.ts 注册 node-cron）并真实扣除余额；材运费滞后 1-3 天出账，后续日结自动补扣/补退（重算补差）；推单时仅记录 push_records 不扣费；负余额禁止推单
+- **计费模式：日结（定时任务，真实扣余额）**：用户应付 = 方果材运费（材料费含推单预扣——预扣即真实扣款，发货转实扣不二次扣，按订单取较大者）+ 0.5×当日全部推送订单数。每天 00:00（Asia/Shanghai）定时结算昨日账期（`src/lib/daily-settlement.ts`，server.ts 注册 node-cron）并真实扣除余额；材运费滞后 1-3 天出账，后续日结自动补扣/补退（重算补差）；系统推单时不扣费（仅记录 push_records）；负余额禁止推单
 - **订单查询窗口**：仅支持近 1/3/7 天（方果 tidList 接口限制）
 
 ### 版本技术栈
@@ -104,26 +104,26 @@
 订单页默认 Tab 为「待整理」（pending）。
 
 ### 计费规则（日结 = 材运费 + 0.5 服务费，日清日结+迟到补账）
-用户应付 = 方果实扣材运费 + 0.50 元/单（`src/lib/billing.ts` PUSH_FEE）
+用户应付 = 方果材运费（含推单预扣）+ 0.50 元/单（`src/lib/billing.ts` PUSH_FEE）
 
 - **费用数据源**：方果资金流水接口 `/shop/transaction-line/page`（`fangguo.ts` fetchTransactionLines，商家端一次只能查一个工厂）。流水 kind 分类（daily-settlement.ts classifyLine）：
   - charge（实扣·入账）：预扣转实扣（材料费，打包发货/一键打包节点）+ 扣费·非订单推送（运费等）
-  - prehold（预扣·不入账）：扣费·订单推送 = 推单时的材料费冻结
-  - refund（退费·条件入账）：feeType=退费/预扣退费，**仅当该 tid 存在实扣记录才冲抵**（推送即取消的单：预扣未入账→退费也不入账，净 0）
+  - prehold（预扣·**入账**）：扣费·订单推送 = 推单时材料费**真实扣款**（实测 prehold 与「预扣转实扣」条数金额 1:1 相等，204/206 单，发货转实扣只是状态确认不二次扣）；材料费按订单 tid 聚合取「预扣总额 vs 实扣总额」绝对值较大者入账（未发货计预扣、已转实扣计实扣、仅实扣无预扣时计实扣），避免双计/漏计
+  - refund（退费·**无条件入账**）：feeType=退费/预扣退费，预扣已入账故退费必须冲抵（推送即取消的单：预扣 -X + 退费 +X = 0，净 0）
   - exclude（排除）：充值类（运营方在方果充值）
   - unknown（未知类型）：保守跳过不入账，管理员账单可见
-- **推单时**：不扣费，仅插入 push_records（fee_applied=false，UNIQUE 幂等防重复计费）
+- **推单时**：系统不即时扣费，仅插入 push_records（fee_applied=false，UNIQUE 幂等防重复计费）；方果侧推单即真实扣材料费（prehold），由当天日结统一扣系统余额
 - **推单服务费口径（三处统一：settleUserDay / 钱包每日扣款 / 管理端日结账单）**：按**当天全部推送订单**计（含方果后台直推）——用方果「扣费·订单推送」prehold 预扣流水去重 tid 统计（每单一条，重推/取消重推去重算 1 单）；当天流水未同步时由 push_records.order_no 兜底合并（`pushedTids = new Set<string>()`，`pushCount = pushedTids.size`）。push_records 仍记录系统推单（UNIQUE 幂等）+ 参与结算标记，但不再单独作为计费依据；资金明细页 0.5 服务费按推送日归属账期（查窗口内订单最早 prehold settle_date 构建 preholdDateByTid，50 分批 .in），单日视图与日结完全对齐
 - **定时日结（日清日结）**：每天 00:00（Asia/Shanghai，server.ts node-cron）执行 `runDailySettlement()`：
   1. 同步最近 7 天流水 upsert 进 fangguo_transactions（id 幂等，容忍补录/补跑；settled 标记不在 upsert 列，不被覆盖）
-  2. 结算所有账期 ≤ 今天（settleCutoff=today，0 点跑即昨日账期）的未结算数据，**真实扣余额**：每用户每账期 = Σ实扣 + Σ有效退费 + 0.5×当日推单数，写一条 consume 流水（描述「日结 YYYY-MM-DD：推单 X 单 ¥Y + 材运费 ¥Z」），乐观锁扣余额（3 次重试，**允许负余额**），total_consume 累加绝对值
+  2. 结算所有账期 ≤ 今天（settleCutoff=today，0 点跑即昨日账期）的未结算数据，**真实扣余额**：每用户每账期 = Σ材料费（按订单 tid 取 max(预扣, 实扣)）+ Σ运费等实扣 + Σ退费 + 0.5×当日推单数，写一条 consume 流水（描述「日结 YYYY-MM-DD：推单 X 单 ¥Y + 材运费 ¥Z」），乐观锁扣余额（3 次重试，**允许负余额**），total_consume 累加绝对值
   3. **迟到补账（重算补差 recompute-and-reconcile）**：材运费滞后 1-3 天出且记在订单日账上，后续日结发现已结算账期有新流水时，重算该账期全量应付（materialFreight 负 + refundTotal 正 − 0.5×推单数），与已有「日结 {date}%」前缀流水总和比对：差额 < 0 写「日结 {date} 补扣：¥X」（consume，再扣余额）；> 0 写「日结 {date} 补退：¥X」（refund，回补余额）；≈0 仅补标记。账单始终对齐方果
   4. 幂等保障：重算补差天然幂等（每次对齐全量）+ 全局锁 getRunLock（定时/手动互斥）+ per-user 锁 withUserLock + 余额乐观锁（.eq(balance, 旧值) 条件更新）
   5. 未归属流水（storeName 未匹配 shops）不入账，管理端告警可见；店铺分配后下次同步自动补填 user_id 补账
   6. 结算起始日保护：settle_date < system_configs.settlement_start_date 的流水不追账，谓词整体标记 settled=true 跳过（**禁止 .in(id 列表) 更新**——历史积压数百条会撑爆 PostgREST URL 长度限制静默失败；同类更新必须谓词过滤并检查返回 error）
 - **账期归属**：按 transactionTime 的上海自然日（=方果账单记账日：订单 10 号出、运费 12 号才出仍记 10 号账上；实测 85% 差 0 天、15% 差 1 天）；管理端「方果每日对账」表按此口径全量分日汇总，可直接与方果后台账单核对
 - **负余额拦截**：balance < 0 时 `blocked=true`，推单接口返回 403，直到管理员补调
-- **配额预检**：availableQuota = floor(balance / 0.5) - 今日未结算单数（仅约束 0.5 服务费；材运费按日结事后扣，存在单日敞口，靠负余额拦截兜底）
+- **配额预检**：availableQuota = floor(balance / 0.5) - 今日未结算单数（仅约束 0.5 服务费；材运费按日结事后扣，靠负余额拦截兜底）
 - **注意**：0 点结算时当天流水尚未出全（运费多在打包发货时出账），日结金额是「当时已知部分」；0 点后新出的流水由迟到补账机制在下次日结自动补扣——管理后台「手动结算」按钮可即时触发，钱包「每日扣款记录」按前缀汇总展示主结算+补扣/补退合计
 
 ## 方果平台对接（实时透传架构）

@@ -10,8 +10,8 @@ import { PUSH_FEE } from '@/lib/billing';
  * GET /api/wallet/fangguo-lines?days=1
  *
  * 布局对齐方果后台资金明细：一个订单号一行，费用分列展示
- * - 材料费：不分 feeType——有实扣（预扣转实扣）取实扣，未发货回退预扣（订单推送冻结额），
- *   退费统一冲抵进材料费
+ * - 材料费：预扣即扣款——按订单取「实扣（预扣转实扣）总额 vs 预扣总额」绝对值较大者
+ *   （未发货计预扣冻结额、已发货计实扣，两阶段同一笔钱不双计），退费统一冲抵进材料费
  * - 运费：发货实扣，退费冲抵
  * - 手动扣费：每笔订单 ¥0.50 推单服务费，按推送日归属账期（昨日推送今日发货的单记昨日，
  *   含方果后台直推；推送日按「扣费·订单推送」预扣流水最早 settle_date 判定），
@@ -188,7 +188,8 @@ export async function GET(req: NextRequest) {
         time: a.time,
         store_name: a.store,
         recharge: 0,
-        material: round2((a.chargeMat > 0 ? a.chargeMat : a.preholdMat) - a.refundMat),
+        // 预扣与实扣是同一笔钱的两个阶段：取绝对值较大者（未发货计预扣、已发货计实扣）
+        material: round2(Math.max(a.chargeMat, a.preholdMat) - a.refundMat),
         freight: round2(a.chargeFrt - a.refundFrt),
         manual,
         material_refund: round2(a.refundMat),
