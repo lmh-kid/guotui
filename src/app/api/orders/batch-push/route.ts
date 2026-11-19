@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/auth-utils";
 import {
   pushFangguoOrders,
   fetchFangguoOrderDetail,
+  isVoidedOrder,
   FangguoApiError,
 } from "@/lib/fangguo";
 import {
@@ -73,10 +74,10 @@ export async function POST(req: NextRequest) {
         notOwned.push(detail.tid);
         continue;
       }
-      if (detail.dfStatus === 1) {
+      if (detail.dfStatus === 1 && !isVoidedOrder(detail)) {
         pushable.push(detail.tid);
       } else {
-        skipped += 1;
+        skipped += 1; // 非待推送状态，或已作废（平台交易关闭）
       }
     }
 

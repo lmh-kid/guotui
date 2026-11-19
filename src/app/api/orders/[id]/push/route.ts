@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth-utils";
-import { pushFangguoOrders, fetchFangguoOrderDetail, FangguoApiError } from "@/lib/fangguo";
+import {
+  pushFangguoOrders,
+  fetchFangguoOrderDetail,
+  isVoidedOrder,
+  FangguoApiError,
+} from "@/lib/fangguo";
 import { settleUser, getPushBillingStats, recordPushes, getUserShopNames } from "@/lib/push-billing";
 import { PUSH_FEE } from "@/lib/billing";
 
@@ -46,6 +51,14 @@ export async function POST(
     const detail = await fetchFangguoOrderDetail(tid);
     if (!shopNames.includes(detail.storeName ?? "")) {
       return NextResponse.json({ error: "订单不存在或不属于您的店铺" }, { status: 404 });
+    }
+
+    // 4.5 已作废拦截（平台交易关闭的单 dfStatus 可能仍为 1，必须显式拦截）
+    if (isVoidedOrder(detail)) {
+      return NextResponse.json(
+        { error: `订单已作废（平台状态「${detail.outerOrderStatusDesc || "交易关闭"}」），无法推送` },
+        { status: 400 }
+      );
     }
 
     if (detail.dfStatus !== 1) {

@@ -98,6 +98,9 @@
 - `pushed` - 已推送（dfStatus 3）
 - `production` - 生产中（dfStatus 4/5）
 - `shipped` - 已发货（deliverTime 有值）
+- `voided` - 已作废（outerOrderStatusDesc 含「交易关闭」即平台侧取消/退款；注意此类单 dfStatus 可能仍为 1，推送前后端双重拦截 `isVoidedOrder`；未知 dfStatus 也保守归入此类禁止推送）
+
+订单页默认 Tab 为「待整理」（pending）。
 
 ### 计费规则（日结模式）
 - 单价：0.50 元/单（`src/lib/billing.ts` PUSH_FEE）

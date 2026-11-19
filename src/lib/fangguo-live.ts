@@ -20,9 +20,10 @@ export interface LiveOrder {
   platform: string; // 映射后的平台标识
   platform_desc: string; // 原始平台描述
   order_type_desc: string | null; // e.g. TEMU全托-紧急备货单
-  status: string; // 果推状态: pending/decoded/pushed/production/shipped
+  status: string; // 果推状态: pending/decoded/pushed/production/shipped/voided
   decode_status: string; // pending/success
   df_status: number;
+  outer_status_desc: string | null; // 平台原始状态（如「交易关闭」）
   product_name: string;
   product_image: string | null;
   spec: string | null;
@@ -69,6 +70,7 @@ function mapDetailToLiveOrder(detail: FangguoOrderDetail): LiveOrder {
     status: mapped.status,
     decode_status: mapped.decodeStatus,
     df_status: detail.dfStatus,
+    outer_status_desc: detail.outerOrderStatusDesc ?? null,
     product_name: firstItem?.title ?? "（无商品信息）",
     product_image: firstItem?.merchandisePicPath || null,
     spec: firstItem?.skuPropertiesName ?? null,

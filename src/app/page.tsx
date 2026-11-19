@@ -83,6 +83,7 @@ const STATUS_TABS = [
   { key: 'pushed', label: '已推送' },
   { key: 'production', label: '生产中' },
   { key: 'shipped', label: '已发货' },
+  { key: 'voided', label: '已作废' },
 ];
 
 const statusConfig: Record<string, { label: string; className: string }> = {
@@ -91,6 +92,7 @@ const statusConfig: Record<string, { label: string; className: string }> = {
   pushed: { label: '已推送', className: 'bg-green-100 text-green-700' },
   production: { label: '生产中', className: 'bg-purple-100 text-purple-700' },
   shipped: { label: '已发货', className: 'bg-emerald-100 text-emerald-700' },
+  voided: { label: '已作废', className: 'bg-red-100 text-red-600' },
 };
 
 const platformNames: Record<string, string> = {
@@ -113,7 +115,7 @@ export default function OrdersPage() {
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [pageSize] = useState(20);
-  const [activeStatus, setActiveStatus] = useState('all');
+  const [activeStatus, setActiveStatus] = useState('pending');
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
   const [selectedNos, setSelectedNos] = useState<string[]>([]);
   const [keyword, setKeyword] = useState('');
@@ -153,9 +155,11 @@ export default function OrdersPage() {
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
+  const isPushable = (o: Order) => o.df_status === 1 && o.status !== 'voided';
+
   const handleSelectAll = (checked: boolean) => {
     if (checked) {
-      setSelectedNos(orders.filter((o) => o.df_status === 1).map((o) => o.order_no));
+      setSelectedNos(orders.filter(isPushable).map((o) => o.order_no));
     } else {
       setSelectedNos([]);
     }
@@ -195,7 +199,7 @@ export default function OrdersPage() {
     }
   };
 
-  const pushableCount = orders.filter((o) => o.df_status === 1).length;
+  const pushableCount = orders.filter(isPushable).length;
 
   return (
     <AppLayout>
@@ -408,7 +412,7 @@ export default function OrdersPage() {
                     {orders.map((order, index) => {
                       const statusInfo = statusConfig[order.status] || statusConfig.pending;
                       const canPush =
-                        order.df_status === 1 &&
+                        isPushable(order) &&
                         !billing?.blocked &&
                         (billing?.availableQuota ?? 0) > 0;
 
@@ -418,7 +422,7 @@ export default function OrdersPage() {
                             <Checkbox
                               checked={selectedNos.includes(order.order_no)}
                               onCheckedChange={(checked) => handleSelectOne(order.order_no, !!checked)}
-                              disabled={order.df_status !== 1}
+                              disabled={!isPushable(order)}
                               aria-label="选择"
                             />
                           </TableCell>
@@ -495,7 +499,7 @@ export default function OrdersPage() {
                             )}
                           </TableCell>
                           <TableCell>
-                            {order.df_status === 1 ? (
+                            {isPushable(order) ? (
                               <Button
                                 size="sm"
                                 onClick={() => handlePush([order.order_no])}

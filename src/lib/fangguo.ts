@@ -226,20 +226,27 @@ export async function verifyFangguoApiKey(apiKey: string): Promise<{ valid: bool
 /**
  * 方果 dfStatus → 果推订单状态
  * dfStatus: 0待整理 1待推送 2已反审 3工厂待审 4生产中 5已打包
+ * outerOrderStatusDesc 含「交易关闭」（平台侧取消/退款作废）→ 已作废 voided
  * deliverTime 有值 → 已发货
  */
 export function mapDfStatusToOrderStatus(detail: {
   dfStatus: number;
   deliverTime?: number | null;
+  outerOrderStatusDesc?: string | null;
 }): {
   status: string;
   decodeStatus: string;
 } {
-  const { dfStatus, deliverTime } = detail;
+  const { dfStatus, deliverTime, outerOrderStatusDesc } = detail;
 
   // 已发货优先判断
   if (deliverTime) {
     return { status: "shipped", decodeStatus: "success" };
+  }
+
+  // 平台侧交易关闭（买家取消/退款）→ 已作废
+  if (outerOrderStatusDesc && outerOrderStatusDesc.includes("交易关闭")) {
+    return { status: "voided", decodeStatus: "pending" };
   }
 
   switch (dfStatus) {
@@ -256,8 +263,20 @@ export function mapDfStatusToOrderStatus(detail: {
     case 5: // 已打包（生产完成待发货）
       return { status: "production", decodeStatus: "success" };
     default:
-      return { status: "pending", decodeStatus: "pending" };
+      // 未知 dfStatus（方果新增枚举，如作废类状态）→ 保守归为已作废，禁止推送
+      return { status: "voided", decodeStatus: "pending" };
   }
+}
+
+/**
+ * 是否已作废订单（平台交易关闭 / 未知状态），作废单禁止推送
+ */
+export function isVoidedOrder(detail: {
+  dfStatus: number;
+  deliverTime?: number | null;
+  outerOrderStatusDesc?: string | null;
+}): boolean {
+  return mapDfStatusToOrderStatus(detail).status === "voided";
 }
 
 /** 方果平台编码 → 果推平台标识 */
