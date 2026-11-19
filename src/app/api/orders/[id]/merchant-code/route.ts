@@ -32,6 +32,7 @@ interface EditableItem {
   title: string;
   spec: string | null;
   image: string | null;
+  printUrl: string | null; // 打印图（生产图）地址：取 diyList[].workUrl 首个非空
   currentSku: string | null; // 现有商家编码（如 90克磨毛布被套三件套-混合色-220X230-28810029）
   materialCode: string | null;
   colorCode: string | null;
@@ -148,12 +149,13 @@ export async function GET(
       title: it.title,
       spec: it.skuPropertiesName ?? null,
       image: it.merchandisePicPath || null,
+      printUrl: (it.diyList ?? []).map((d) => d.workUrl).find((u) => !!u) ?? null,
       currentSku: it.shopMappingSku || null,
       materialCode: it.materialCode ?? null,
       colorCode: it.colorCode ?? null,
       modelCode: it.modelCode ?? null,
       pictureCode: it.pictureCode ?? null,
-    }));
+    }));;
 
     return NextResponse.json({
       order: {
