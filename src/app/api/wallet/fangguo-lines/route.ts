@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-utils';
 import { getSupabaseAdminClient } from '@/storage/database/supabase-client';
-import { shanghaiDateStr } from '@/lib/daily-settlement';
+import { shanghaiDateStr, getSettlementStartDate } from '@/lib/daily-settlement';
 import { getUserShopNames } from '@/lib/push-billing';
 import { PUSH_FEE } from '@/lib/billing';
 
@@ -50,6 +50,7 @@ export async function GET(req: NextRequest) {
   try {
     const supabase = await getSupabaseAdminClient();
     const since = shanghaiDateStr(Date.now() - (days - 1) * 86400_000);
+    const startDate = await getSettlementStartDate();
 
     // 0. 补归属：店铺刚分配时，历史同步的流水 user_id 仍为空，
     //    这里把「店铺名属于本用户但未归属」的流水就地补填（幂等，只填空不覆盖），
