@@ -125,7 +125,8 @@ export interface FangguoOrderItem {
   price: number;
   skuPropertiesName: string; // 规格
   shopMappingSku: string; // 解码后的商户编码
-  outerIid: string; // 原商家编码
+  outerIid: string; // 原商家编码（SKU 货号，如 2816041310048-ln1）
+  originalGoodsId: string | null; // 平台商品 ID（用于商品库匹配商品货号 productSn）
   materialCode: string | null;
   colorCode: string | null;
   modelCode: string | null;
@@ -285,7 +286,11 @@ const GOODS_OPTIONS_TTL_MS = 6 * 60 * 60_000;
 const GOODS_SCAN_WINDOWS = 4; // 扫描最近 4 个 7 天窗口（接口限制单次 ≤7 天）
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const ggo = globalThis as unknown as {
-  __fgGoodsOptions?: { ts: number; data: Map<number, FactoryCodeOptions> } | null;
+  __fgGoodsOptions?: {
+    ts: number;
+    data: Map<number, FactoryCodeOptions>;
+    snByGoodsOriginId?: Map<string, string>; // 平台商品 ID → 商品货号（productSn）
+  } | null;
   __fgGoodsOptionsWarming?: boolean;
 };
 
@@ -299,6 +304,24 @@ export function getCachedFactoryModelPicOptions(): Map<number, FactoryCodeOption
     return cached.data;
   }
   return new Map();
+}
+
+/**
+ * 按平台商品 ID 批量查商品货号（productSn，来自商品库聚合缓存）
+ * 返回 { [goodsOriginId]: productSn }，未命中不出现在结果里
+ */
+export function getGoodsSnByOriginIds(goodsOriginIds: Array<string | null | undefined>): Record<string, string> {
+  const cached = ggo.__fgGoodsOptions;
+  const result: Record<string, string> = {};
+  if (!cached || !cached.snByGoodsOriginId || Date.now() - cached.ts >= GOODS_OPTIONS_TTL_MS) {
+    return result;
+  }
+  for (const id of goodsOriginIds) {
+    if (!id) continue;
+    const sn = cached.snByGoodsOriginId.get(String(id));
+    if (sn) result[String(id)] = sn;
+  }
+  return result;
 }
 
 /**
@@ -335,6 +358,7 @@ async function aggregateGoodsOptions(): Promise<Map<number, FactoryCodeOptions>>
   const now = Date.now();
   const day = 86400_000;
   const seenGoods = new Set<string>();
+  const snByGoodsOriginId = new Map<string, string>();
 
   // 各 7 天窗口并行拉取（窗口内分页串行）
   const windows: Array<Promise<void>> = [];
@@ -346,7 +370,7 @@ async function aggregateGoodsOptions(): Promise<Map<number, FactoryCodeOptions>>
         let pageNo = 1;
         // 每个窗口最多拉 20 页（2000 商品），防止极端情况拖垮请求
         while (pageNo <= 20) {
-          const page = await callApi<{ list?: Array<{ id?: string; goodsOriginId?: string; skus?: FangguoGoodsPageSku[] }> }>(
+          const page = await callApi<{ list?: Array<{ id?: string; goodsOriginId?: string; productSn?: string | null; skus?: FangguoGoodsPageSku[] }> }>(
             "POST",
             "/warehouse/shop/goods/page",
             { body: { pageNo, pageSize: 100, sjbmUpdateStartTime: start, sjbmUpdateEndTime: end } }
@@ -357,6 +381,7 @@ async function aggregateGoodsOptions(): Promise<Map<number, FactoryCodeOptions>>
             const key = String(goods.goodsOriginId ?? goods.id ?? "");
             if (key && seenGoods.has(key)) continue;
             if (key) seenGoods.add(key);
+            if (key && goods.productSn) snByGoodsOriginId.set(key, goods.productSn);
             for (const sku of goods.skus ?? []) {
               const fid = sku.factoryTenantId;
               if (fid == null) continue;
@@ -400,7 +425,7 @@ async function aggregateGoodsOptions(): Promise<Map<number, FactoryCodeOptions>>
   }
 
   if (result.size > 0) {
-    ggo.__fgGoodsOptions = { ts: Date.now(), data: result };
+    ggo.__fgGoodsOptions = { ts: Date.now(), data: result, snByGoodsOriginId };
   }
   return result;
 }

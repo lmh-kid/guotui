@@ -31,6 +31,10 @@ interface EditableItem {
   spec: string | null;
   image: string | null;
   currentSku: string | null;
+  /** SKU 货号（原商家编码，如 2816041310048-ln1） */
+  skuNo: string | null;
+  /** 货号（商品维度，来自商品库 productSn） */
+  goodsNo: string | null;
   materialCode: string | null;
   colorCode: string | null;
   modelCode: string | null;
@@ -322,6 +326,20 @@ export default function MerchantCodeDialog({ orderNo, onClose, onSuccess }: Merc
                         {item.spec && <span className="text-xs text-gray-500 truncate max-w-xs">{item.spec}</span>}
                         <span className="text-xs text-gray-400">x{item.num}</span>
                       </div>
+                      {(item.skuNo || item.goodsNo) && (
+                        <div className="flex gap-4 items-center mt-1 flex-wrap">
+                          {item.skuNo && (
+                            <span className="text-xs text-gray-500">
+                              SKU货号：<span className="font-mono text-gray-700">{item.skuNo}</span>
+                            </span>
+                          )}
+                          {item.goodsNo && (
+                            <span className="text-xs text-gray-500">
+                              货号：<span className="font-mono text-gray-700">{item.goodsNo}</span>
+                            </span>
+                          )}
+                        </div>
+                      )}
                       {item.currentSku && item.currentSku !== '*-*-*-*' && (
                         <p className="text-xs text-gray-400 mt-0.5">
                           当前编码：<span className="font-mono text-gray-600">{item.currentSku}</span>

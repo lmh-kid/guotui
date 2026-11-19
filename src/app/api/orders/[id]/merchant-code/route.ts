@@ -4,6 +4,7 @@ import {
   fetchFangguoOrderDetail,
   fetchFangguoMaterialColors,
   getCachedFactoryModelPicOptions,
+  getGoodsSnByOriginIds,
   warmFactoryModelPicOptions,
   saveFangguoProduct,
   isVoidedOrder,
@@ -33,6 +34,8 @@ interface EditableItem {
   spec: string | null;
   image: string | null;
   currentSku: string | null; // 现有商家编码（如 90克磨毛布被套三件套-混合色-220X230-28810029）
+  skuNo: string | null; // SKU 货号（原商家编码，如 2816041310048-ln1）
+  goodsNo: string | null; // 货号（商品维度，来自商品库 productSn，如 2816041110005-cd）
   materialCode: string | null;
   colorCode: string | null;
   modelCode: string | null;
@@ -138,6 +141,9 @@ export async function GET(
       }
     }
 
+    // 商品货号映射：平台商品 ID → 商品库 productSn（聚合缓存可能未就绪，查不到则不展示）
+    const snMap = getGoodsSnByOriginIds((detail.orderItems ?? []).map((it) => it.originalGoodsId));
+
     const items: EditableItem[] = (detail.orderItems ?? []).map((it) => ({
       id: it.id,
       oid: it.oid,
@@ -147,11 +153,13 @@ export async function GET(
       spec: it.skuPropertiesName ?? null,
       image: it.merchandisePicPath || null,
       currentSku: it.shopMappingSku || null,
+      skuNo: it.outerIid || null,
+      goodsNo: (it.originalGoodsId && snMap[String(it.originalGoodsId)]) || null,
       materialCode: it.materialCode ?? null,
       colorCode: it.colorCode ?? null,
       modelCode: it.modelCode ?? null,
       pictureCode: it.pictureCode ?? null,
-    }));;
+    }));
 
     return NextResponse.json({
       order: {
