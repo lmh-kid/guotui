@@ -159,6 +159,33 @@ export async function GET(req: NextRequest) {
       ...new Set(unassigned.map((l) => l.store_name).filter(Boolean)),
     ];
 
+    // 7. 方果对账维度：全部流水（含未归属）按账期聚合，与方果后台账单每日金额核对
+    //    对账口径不做退费有效性过滤（方果账单显示全部退费），计费口径以 list 为准
+    const fangguoDailyMap = new Map<
+      string,
+      { date: string; charge: number; refund: number; unassignedCount: number; lines: number }
+    >();
+    for (const l of lines ?? []) {
+      let d = fangguoDailyMap.get(l.settle_date);
+      if (!d) {
+        d = { date: l.settle_date, charge: 0, refund: 0, unassignedCount: 0, lines: 0 };
+        fangguoDailyMap.set(l.settle_date, d);
+      }
+      d.lines += 1;
+      const amount = parseFloat(l.processed_amount as string);
+      if (l.kind === 'charge') d.charge += amount;
+      else if (l.kind === 'refund') d.refund += amount;
+      if (!l.user_id) d.unassignedCount += 1;
+    }
+    const fangguoDaily = [...fangguoDailyMap.values()]
+      .map((d) => ({
+        ...d,
+        charge: parseFloat(d.charge.toFixed(2)),
+        refund: parseFloat(d.refund.toFixed(2)),
+        net: parseFloat((d.charge + d.refund).toFixed(2)),
+      }))
+      .sort((a, b) => (a.date < b.date ? 1 : -1));
+
     const summary = {
       totalAmount: parseFloat(list.reduce((s, g) => s + g.total, 0).toFixed(2)),
       totalPush: list.reduce((s, g) => s + g.push_count, 0),
@@ -173,6 +200,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       list,
       summary,
+      fangguoDaily,
       feePerOrder: PUSH_FEE,
       settlementStartDate: startDate,
       days,

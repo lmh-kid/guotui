@@ -122,6 +122,15 @@ interface SettlementSummary {
   unassignedStores: string[];
 }
 
+interface FangguoDailyRow {
+  date: string;
+  charge: number; // 方果侧实扣合计（负数，含未归属）
+  refund: number; // 方果侧退费合计（正数，不过滤有效性）
+  net: number; // 净额 = charge + refund
+  unassignedCount: number; // 未归属流水条数
+  lines: number; // 总流水条数
+}
+
 interface SettlementRunResult {
   success?: boolean;
   summary?: {
@@ -191,6 +200,7 @@ export default function AdminPage() {
   // 日结账单（材运费 + 0.5×推单数，每天 00:00 定时结算）
   const [settlementRecords, setSettlementRecords] = useState<SettlementRow[]>([]);
   const [settlementSummary, setSettlementSummary] = useState<SettlementSummary | null>(null);
+  const [fangguoDaily, setFangguoDaily] = useState<FangguoDailyRow[]>([]);
   const [stLoading, setStLoading] = useState(false);
   const [stDays, setStDays] = useState(7);
   const [stRunLoading, setStRunLoading] = useState(false);
@@ -485,11 +495,14 @@ export default function AdminPage() {
   const loadSettlementRecords = useCallback(async (days = 7) => {
     setStLoading(true);
     try {
-      const res = await apiRequest<{ list: SettlementRow[]; summary: SettlementSummary }>(
-        `/api/admin/settlement/records?days=${days}`
-      );
+      const res = await apiRequest<{
+        list: SettlementRow[];
+        summary: SettlementSummary;
+        fangguoDaily?: FangguoDailyRow[];
+      }>(`/api/admin/settlement/records?days=${days}`);
       setSettlementRecords(res.list || []);
       setSettlementSummary(res.summary || null);
+      setFangguoDaily(res.fangguoDaily || []);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '加载日结账单失败');
     } finally {
@@ -689,6 +702,63 @@ export default function AdminPage() {
                 )}
               </CardContent>
             </Card>
+
+            {/* 方果每日对账 */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <CircleDollarSign className="w-4 h-4 text-blue-600" />
+                  方果每日对账（全部流水按账期，与方果后台账单核对）
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {stLoading ? (
+                  <div className="flex items-center justify-center h-24">
+                    <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+                  </div>
+                ) : fangguoDaily.length === 0 ? (
+                  <p className="text-center text-gray-500 py-6">近 {stDays} 天暂无方果流水</p>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>账期</TableHead>
+                        <TableHead className="text-right">实扣合计</TableHead>
+                        <TableHead className="text-right">退费合计</TableHead>
+                        <TableHead className="text-right">净额</TableHead>
+                        <TableHead className="text-right">未归属条数</TableHead>
+                        <TableHead className="text-right">流水总数</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {fangguoDaily.map((d) => (
+                        <TableRow key={d.date}>
+                          <TableCell className="text-gray-700">{d.date}</TableCell>
+                          <TableCell className="text-right text-red-600">¥{d.charge.toFixed(2)}</TableCell>
+                          <TableCell className="text-right text-green-600">
+                            {d.refund !== 0 ? `+¥${d.refund.toFixed(2)}` : '—'}
+                          </TableCell>
+                          <TableCell className={`text-right font-semibold ${d.net < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                            ¥{d.net.toFixed(2)}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {d.unassignedCount > 0 ? (
+                              <span className="text-amber-600">{d.unassignedCount} 条</span>
+                            ) : (
+                              '—'
+                            )}
+                          </TableCell>
+                          <TableCell className="text-right text-gray-500">{d.lines}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+                <p className="text-xs text-gray-400 mt-3">
+                  对账口径与方果账单一致（按流水记账日分日汇总，退费含全部退费记录）；「实扣合计」含未分配店铺的流水，与上方日结账单（仅已归属用户）的差异即未归属部分。
+                </p>
+              </CardContent>
+            </Card>
           </TabsContent>
 
           {/* 流水记录 Tab */}
@@ -869,7 +939,7 @@ export default function AdminPage() {
             </div>
 
             <p className="text-xs text-gray-400">
-              每天凌晨 00:00（北京时间）自动结算：用户应付 = 方果实扣材运费 + ¥0.50×推单数；退费自动冲抵（仅冲抵已实扣部分）；材运费按扣款日归属账期（发货滞后费用顺延）。
+              每天凌晨 00:00（北京时间）自动结算：用户应付 = 方果实扣材运费 + ¥0.50×推单数；退费自动冲抵（仅冲抵已实扣部分）。账期按方果记账日归属（滞后运费记在订单当日账上），账期满 7 天封账结算，之后金额不再变动，可与方果账单逐日核对。
             </p>
 
             {settlementSummary && settlementSummary.unassignedLines > 0 && (
@@ -932,7 +1002,9 @@ export default function AdminPage() {
                               <Badge className="bg-green-100 text-green-700">已结算</Badge>
                             ) : (
                               <Badge className="bg-amber-100 text-amber-700">
-                                待结算{r.date >= new Date().toISOString().slice(0, 10) ? '（今日，次日 00:00）' : '（次日 00:00 自动）'}
+                                {r.date >= new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+                                  ? '待结算（未满 7 天，账期还在补录滞后费用）'
+                                  : '待结算（账期满 7 天后自动结算）'}
                               </Badge>
                             )}
                           </TableCell>

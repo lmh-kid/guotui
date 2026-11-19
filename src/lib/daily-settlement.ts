@@ -9,14 +9,16 @@ import {
 /**
  * 日结结算模块（定时任务，每天 00:00 Asia/Shanghai 触发）
  *
- * 费用口径（用户每天应付 = 材运费 + 推单服务费）:
+ * 费用口径（用户每账期应付 = 材运费 + 推单服务费）:
  * - 材运费 = 方果「实扣」流水：预扣转实扣（材料费）+ 扣费·非订单推送（运费等）
  *   （「扣费·订单推送」是预扣冻结，不入账）
  * - 退费冲抵 = 「退费」流水，但仅当该 tid 存在实扣记录（推送即取消的单：
  *   预扣未入账 → 退费也不入账，净 0）
  * - 推单服务费 = 0.5 × 当日 push_records 单数
- * - 账期按 transactionTime 的上海自然日归属：
- *   订单今天推送、后天发货扣运费 → 运费落后天账上（晚出费用天然顺延）
+ * - 账期按 transactionTime 的上海自然日归属（方果账单口径：订单 10 号出、
+ *   运费 12 号才出但仍记 10 号账上）
+ * - 封账线：账期 D 满 7 天（D+7）才结算，期间滞后材运费持续补入同一账期；
+ *   7 天后再出的流水不在同步窗口内，账单不再变（与方果对账口径一致）
  * - 充值类流水（运营方在方果充值）排除
  *
  * 幂等: fangguo_transactions.id upsert + wallet_transactions 日结流水前缀检查
@@ -80,7 +82,8 @@ function releaseRunLock(): void {
 
 // ============ 流水同步 ============
 
-const SYNC_WINDOWS_DAYS = 5; // 同步最近 5 天流水（容忍任务中断补跑）
+const SYNC_WINDOWS_DAYS = 7; // 同步最近 7 天流水（与封账线对齐：账期 D 的流水最晚 D+7 当天可拉到，之后丢弃）
+const SETTLE_DELAY_DAYS = 7; // 账期满 7 天才结算（材运费滞后 1-3 天出且账期记在订单日，须等落齐）
 
 /** 同步方果资金流水入库（upsert 幂等，按流水 id） */
 export async function syncTransactionLines(): Promise<{
@@ -226,7 +229,7 @@ async function withUserLock<T>(userId: string, fn: () => Promise<T>): Promise<T>
 }
 
 /**
- * 日结入口：同步流水 + 结算所有账期 ≤ 昨天的未结算数据
+ * 日结入口：同步流水 + 结算所有账期 ≤ 今天-7 的未结算数据（满 7 天封账）
  * 每用户每天一条 consume 流水：材运费 + 0.5×推单数
  */
 export async function runDailySettlement(): Promise<SettlementSummary> {
@@ -257,7 +260,7 @@ export async function runDailySettlement(): Promise<SettlementSummary> {
   }
 }
 
-/** 结算所有账期 ≤ 昨天的未结算数据 */
+/** 结算所有账期满 SETTLE_DELAY_DAYS 的未结算数据（等滞后材运费落齐后一次性结） */
 export async function settleDueDays(): Promise<{
   settledUsers: number;
   settledAmount: number;
@@ -266,7 +269,9 @@ export async function settleDueDays(): Promise<{
 }> {
   const supabase = await getSupabaseAdminClient();
   const today = shanghaiDateStr(Date.now());
-  const yesterday = dateAddDays(today, -1);
+  // 封账线：账期满 7 天才结算。方果材运费滞后 1-3 天出且账期记在订单日，
+  // 提前结算会把后出的运费漏掉；7 天窗口后到达的流水不再入账（账单不再变）
+  const settleCutoff = dateAddDays(today, -SETTLE_DELAY_DAYS);
 
   // 1. 待结算流水（已归属用户；结算起始日之前的历史流水标记跳过不追账）
   let linesQuery = supabase
@@ -274,7 +279,7 @@ export async function settleDueDays(): Promise<{
     .select("id, user_id, tid, kind, processed_amount, settle_date, store_name, fee_name_type, business_node")
     .eq("settled", false)
     .not("user_id", "is", null)
-    .lte("settle_date", yesterday)
+    .lte("settle_date", settleCutoff)
     .order("settle_date", { ascending: true });
 
   const startDate = await getSettlementStartDate();
@@ -304,12 +309,13 @@ export async function settleDueDays(): Promise<{
     return { settledUsers: 0, settledAmount: 0, skippedUsers: 0, errors: [linesErr.message] };
   }
 
-  // 2. 待结算推单（按用户×日期；服务费部分不受 settlement_start_date 限制）
+  // 2. 待结算推单（按用户×日期；与材运费同一账期、同一封账线结算；
+  //    服务费部分不受 settlement_start_date 限制）
   const { data: pushes, error: pushErr } = await supabase
     .from("push_records")
     .select("id, user_id, push_date")
     .eq("fee_applied", false)
-    .lte("push_date", yesterday);
+    .lte("push_date", settleCutoff);
   if (pushErr) {
     return { settledUsers: 0, settledAmount: 0, skippedUsers: 0, errors: [pushErr.message] };
   }
