@@ -31,8 +31,10 @@ import {
   Package,
   CalendarDays,
   Send,
+  Pencil,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import MerchantCodeDialog from '@/components/merchant-code-dialog';
 
 interface Order {
   order_no: string;
@@ -123,6 +125,7 @@ export default function OrdersPage() {
   const [billing, setBilling] = useState<Billing | null>(null);
   const [noShop, setNoShop] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [codeEditOrder, setCodeEditOrder] = useState<string | null>(null);
 
   const fetchOrders = useCallback(async () => {
     setLoading(true);
@@ -499,22 +502,36 @@ export default function OrdersPage() {
                             )}
                           </TableCell>
                           <TableCell>
-                            {isPushable(order) ? (
-                              <Button
-                                size="sm"
-                                onClick={() => handlePush([order.order_no])}
-                                disabled={actionLoading !== null || !!billing?.blocked || (billing?.availableQuota ?? 0) < 1}
-                              >
-                                {actionLoading === 'push' ? (
-                                  <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-                                ) : (
-                                  <Play className="w-4 h-4 mr-1" />
-                                )}
-                                推送
-                              </Button>
-                            ) : (
-                              <span className="text-xs text-gray-400">-</span>
-                            )}
+                            <div className="flex gap-1.5 items-center">
+                              {isPushable(order) && (
+                                <Button
+                                  size="sm"
+                                  onClick={() => handlePush([order.order_no])}
+                                  disabled={actionLoading !== null || !!billing?.blocked || (billing?.availableQuota ?? 0) < 1}
+                                >
+                                  {actionLoading === 'push' ? (
+                                    <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                                  ) : (
+                                    <Play className="w-4 h-4 mr-1" />
+                                  )}
+                                  推送
+                                </Button>
+                              )}
+                              {(order.status === 'pending' || order.status === 'decoded') && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => setCodeEditOrder(order.order_no)}
+                                  disabled={actionLoading !== null}
+                                >
+                                  <Pencil className="w-4 h-4 mr-1" />
+                                  改码
+                                </Button>
+                              )}
+                              {!isPushable(order) && order.status !== 'pending' && order.status !== 'decoded' && (
+                                <span className="text-xs text-gray-400">-</span>
+                              )}
+                            </div>
                           </TableCell>
                         </TableRow>
                       );
@@ -553,6 +570,15 @@ export default function OrdersPage() {
           )}
         </div>
       </div>
+
+      {/* 修改商家编码弹窗 */}
+      {codeEditOrder && (
+        <MerchantCodeDialog
+          orderNo={codeEditOrder}
+          onClose={() => setCodeEditOrder(null)}
+          onSuccess={() => fetchOrders()}
+        />
+      )}
     </AppLayout>
   );
 }

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-utils';
 import { fetchLiveOrders, filterByShops, LiveOrder } from '@/lib/fangguo-live';
 import { settleUser, getPushBillingStats, getUserShopNames } from '@/lib/push-billing';
-import { FangguoApiError } from '@/lib/fangguo';
+import { FangguoApiError, warmFactoryModelPicOptions } from '@/lib/fangguo';
 
 /**
  * 订单列表（实时透传方果 API，不落库）
@@ -52,6 +52,9 @@ export async function GET(req: NextRequest) {
     if (shopNames.length === 0) {
       return NextResponse.json(response);
     }
+
+    // 2.5 顺手预热「型号/图号」候选（改码弹窗数据源，fire-and-forget 不阻塞）
+    warmFactoryModelPicOptions();
 
     // 3. 实时拉取 + 店铺过滤
     const allOrders = filterByShops(await fetchLiveOrders(days), shopNames);

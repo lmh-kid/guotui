@@ -119,6 +119,7 @@ export interface FangguoShop {
 export interface FangguoOrderItem {
   id: string;
   oid: string;
+  sysOid: string; // 系统商品单号（saveProduct 必填）
   title: string; // 商品标题
   num: number;
   price: number;
@@ -219,6 +220,201 @@ export async function verifyFangguoApiKey(apiKey: string): Promise<{ valid: bool
     const msg = e instanceof Error ? e.message : "验证失败";
     return { valid: false, shopCount: 0, message: msg };
   }
+}
+
+// ============ 商家编码四要素（材质-颜色-型号-图号） ============
+
+/** 工厂可用材质（含嵌套颜色选项） */
+export interface FangguoMaterialColor {
+  id: number;
+  materialCode: string; // 材质编码（即名称，如「90克磨毛布被套三件套」）
+  factoryCode: string;
+  displaySort: number;
+  colors: Array<{
+    id: number;
+    colorCode: string; // 颜色编码（即名称，如「混合色」）
+    factoryCode: string;
+    displaySort: number;
+  }>;
+}
+
+/** 商品库 SKU（型号/图号选项的来源） */
+interface FangguoGoodsPageSku {
+  factoryTenantId: number | null;
+  shopMaterialCode: string | null;
+  shopColorCode: string | null;
+  shopModelCode: string | null;
+  shopPicCode: string | null;
+}
+
+/** 按工厂聚合的型号/图号选项 */
+export interface FactoryCodeOptions {
+  models: string[];
+  pics: string[];
+}
+
+// 材质颜色缓存（10 分钟，按工厂）
+const MATERIAL_CACHE_TTL_MS = 10 * 60_000;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const gmc = globalThis as unknown as { __fgMaterialCache?: Map<string, { ts: number; data: FangguoMaterialColor[] }> };
+if (!gmc.__fgMaterialCache) gmc.__fgMaterialCache = new Map();
+
+/**
+ * 拉取工厂的材质+颜色选项（修改商家编码弹窗数据源）
+ * GET /basic/materialColors/v1?factoryId=
+ */
+export async function fetchFangguoMaterialColors(factoryId: number): Promise<FangguoMaterialColor[]> {
+  const cacheKey = String(factoryId);
+  const cache = gmc.__fgMaterialCache!;
+  const hit = cache.get(cacheKey);
+  if (hit && Date.now() - hit.ts < MATERIAL_CACHE_TTL_MS) return hit.data;
+
+  const data = await callApi<FangguoMaterialColor[]>("GET", "/basic/materialColors/v1", {
+    query: { factoryId: String(factoryId) },
+  });
+  const list = (data ?? []).slice().sort((a, b) => (a.displaySort ?? 0) - (b.displaySort ?? 0));
+  cache.set(cacheKey, { ts: Date.now(), data: list });
+  return list;
+}
+
+// 型号/图号聚合缓存（6 小时；商品库数据变化慢）
+const GOODS_OPTIONS_TTL_MS = 6 * 60 * 60_000;
+const GOODS_SCAN_WINDOWS = 4; // 扫描最近 4 个 7 天窗口（接口限制单次 ≤7 天）
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const ggo = globalThis as unknown as {
+  __fgGoodsOptions?: { ts: number; data: Map<number, FactoryCodeOptions> } | null;
+  __fgGoodsOptionsWarming?: boolean;
+};
+
+/**
+ * 读取已缓存的型号/图号选项（只读，立即返回；缓存可能为空 Map）
+ * 首次访问需先调用 warmFactoryModelPicOptions() 后台预热
+ */
+export function getCachedFactoryModelPicOptions(): Map<number, FactoryCodeOptions> {
+  const cached = ggo.__fgGoodsOptions;
+  if (cached && Date.now() - cached.ts < GOODS_OPTIONS_TTL_MS) {
+    return cached.data;
+  }
+  return new Map();
+}
+
+/**
+ * 后台预热型号/图号选项聚合（fire-and-forget，防重入）
+ * 聚合需分页扫商品库（数千商品），耗时可达数十秒，绝不阻塞请求
+ */
+export function warmFactoryModelPicOptions(): void {
+  const cached = ggo.__fgGoodsOptions;
+  if (cached && Date.now() - cached.ts < GOODS_OPTIONS_TTL_MS && cached.data.size > 0) return;
+  if (ggo.__fgGoodsOptionsWarming) return;
+  ggo.__fgGoodsOptionsWarming = true;
+
+  void aggregateGoodsOptions()
+    .catch(() => {
+      // 静默失败：下次访问会再次触发预热
+    })
+    .finally(() => {
+      ggo.__fgGoodsOptionsWarming = false;
+    });
+}
+
+/**
+ * 从商家商品库聚合各工厂的「型号/图号」选项
+ * POST /warehouse/shop/goods/page（sjbm 更新时间窗口 ≤7 天，分页 100）
+ *
+ * 说明：方果 OpenAPI 未提供型号列表接口（/basic/models/v1 无法鉴权调用），
+ * 故以商家商品库中已解码 SKU 的 shopModelCode/shopPicCode 去重聚合作为选项来源。
+ */
+async function aggregateGoodsOptions(): Promise<Map<number, FactoryCodeOptions>> {
+  const byFactory = new Map<number, { models: Set<string>; pics: Set<string> }>();
+  const now = Date.now();
+  const day = 86400_000;
+  const seenGoods = new Set<string>();
+
+  // 各 7 天窗口并行拉取（窗口内分页串行）
+  const windows: Array<Promise<void>> = [];
+  for (let w = 0; w < GOODS_SCAN_WINDOWS; w += 1) {
+    const end = now - w * 7 * day;
+    const start = end - 7 * day + day;
+    windows.push(
+      (async () => {
+        let pageNo = 1;
+        // 每个窗口最多拉 20 页（2000 商品），防止极端情况拖垮请求
+        while (pageNo <= 20) {
+          const page = await callApi<{ list?: Array<{ id?: string; goodsOriginId?: string; skus?: FangguoGoodsPageSku[] }> }>(
+            "POST",
+            "/warehouse/shop/goods/page",
+            { body: { pageNo, pageSize: 100, sjbmUpdateStartTime: start, sjbmUpdateEndTime: end } }
+          );
+          const list = page?.list ?? [];
+          if (list.length === 0) break;
+          for (const goods of list) {
+            const key = String(goods.goodsOriginId ?? goods.id ?? "");
+            if (key && seenGoods.has(key)) continue;
+            if (key) seenGoods.add(key);
+            for (const sku of goods.skus ?? []) {
+              const fid = sku.factoryTenantId;
+              if (fid == null) continue;
+              let bucket = byFactory.get(fid);
+              if (!bucket) {
+                bucket = { models: new Set(), pics: new Set() };
+                byFactory.set(fid, bucket);
+              }
+              if (sku.shopModelCode) bucket.models.add(sku.shopModelCode);
+              if (sku.shopPicCode) bucket.pics.add(sku.shopPicCode);
+            }
+          }
+          if (list.length < 100) break;
+          pageNo += 1;
+        }
+      })()
+    );
+  }
+  await Promise.all(windows);
+
+  const result = new Map<number, FactoryCodeOptions>();
+  for (const [fid, bucket] of byFactory) {
+    result.set(fid, {
+      models: Array.from(bucket.models).sort(),
+      pics: Array.from(bucket.pics).sort(),
+    });
+  }
+
+  if (result.size > 0) {
+    ggo.__fgGoodsOptions = { ts: Date.now(), data: result };
+  }
+  return result;
+}
+
+/** 修改订单商品（商家编码四要素）请求体 */
+export interface SaveProductItemInput {
+  id: string; // 订单商品 id（orderItems[].id）
+  oid: string;
+  sysOid: string;
+  num: number;
+  materialCode: string;
+  colorCode: string;
+  modelCode: string;
+  pictureCode: string;
+}
+
+/**
+ * 修改订单商品/商家编码（语雀文档 19.修改订单商品/图片）
+ * POST /order/saveProduct
+ * 商家编码规则: 材质-颜色-型号-图号
+ */
+export async function saveFangguoProduct(params: {
+  sysTid: string;
+  factoryId?: number | null;
+  orderItems: SaveProductItemInput[];
+}): Promise<boolean> {
+  const data = await callApi<boolean>("POST", "/order/saveProduct", {
+    body: {
+      sysTid: params.sysTid,
+      factoryId: params.factoryId ?? undefined,
+      orderItems: params.orderItems,
+    },
+  });
+  return data === true;
 }
 
 // ============ 状态映射 ============

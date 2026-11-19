@@ -159,3 +159,24 @@ export function filterByShops(orders: LiveOrder[], shopNames: string[]): LiveOrd
   const set = new Set(shopNames);
   return orders.filter((o) => set.has(o.store_name));
 }
+
+/**
+ * 刷新单条订单的实时缓存（修改商家编码等写操作后调用，免等 60s 缓存过期）
+ * 重拉该订单 detail 并替换缓存中所有窗口内的旧数据
+ */
+export async function refreshLiveOrder(tid: string): Promise<LiveOrder | null> {
+  try {
+    const detail = await fetchFangguoOrderDetail(tid);
+    const fresh = mapDetailToLiveOrder(detail);
+    const cache = g.__fgLiveCache!;
+    for (const entry of cache.values()) {
+      const idx = entry.orders.findIndex((o) => o.order_no === tid);
+      if (idx >= 0) {
+        entry.orders[idx] = fresh;
+      }
+    }
+    return fresh;
+  } catch {
+    return null;
+  }
+}
