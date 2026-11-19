@@ -5,7 +5,7 @@ import AppLayout from '@/components/app-layout';
 import { apiRequest } from '@/lib/api-request';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Dialog,
@@ -14,8 +14,11 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog';
-import { Wallet, Plus, ArrowDownCircle, ArrowUpCircle, Clock, Loader2 } from 'lucide-react';
+import { Plus, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
+import FangguoLinesTab from '@/components/wallet/fangguo-lines-tab';
+import DailySettlementTab from '@/components/wallet/daily-settlement-tab';
+import TransactionsTab from '@/components/wallet/transactions-tab';
 
 interface BalanceData {
   balance: string;
@@ -24,34 +27,12 @@ interface BalanceData {
   total_consume: string;
 }
 
-interface Transaction {
-  id: string;
-  type: string;
-  amount: string;
-  balance_after: string;
-  description: string;
-  order_id: string | null;
-  created_at: string;
-}
-
-interface TransactionsResponse {
-  list: Transaction[];
-  total: number;
-  page: number;
-  pageSize: number;
-}
-
 const RECHARGE_OPTIONS = [50, 100, 200, 500, 1000, 2000];
 
 export default function WalletPage() {
   const [balance, setBalance] = useState<BalanceData | null>(null);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [balanceLoading, setBalanceLoading] = useState(true);
-  const [txLoading, setTxLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('all');
-  const [page, setPage] = useState(1);
-  const [total, setTotal] = useState(0);
-  const [pageSize] = useState(20);
+  const [activeTab, setActiveTab] = useState('lines');
   const [rechargeDialogOpen, setRechargeDialogOpen] = useState(false);
   const [rechargeAmount, setRechargeAmount] = useState('100');
   const [customAmount, setCustomAmount] = useState('');
@@ -69,34 +50,13 @@ export default function WalletPage() {
     }
   }, []);
 
-  const fetchTransactions = useCallback(async () => {
-    setTxLoading(true);
-    try {
-      const params = new URLSearchParams({
-        page: String(page),
-        pageSize: String(pageSize),
-        type: activeTab,
-      });
-      const data = await apiRequest<TransactionsResponse>(
-        `/api/wallet/transactions?${params.toString()}`
-      );
-      setTransactions(data.list);
-      setTotal(data.total);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : '加载流水失败';
-      toast.error(message);
-    } finally {
-      setTxLoading(false);
-    }
-  }, [page, pageSize, activeTab]);
-
   useEffect(() => {
     fetchBalance();
+    // 手动结算等操作触发余额变化时刷新
+    const onBalanceUpdated = () => fetchBalance();
+    window.addEventListener('balance-updated', onBalanceUpdated);
+    return () => window.removeEventListener('balance-updated', onBalanceUpdated);
   }, [fetchBalance]);
-
-  useEffect(() => {
-    fetchTransactions();
-  }, [fetchTransactions]);
 
   const handleRecharge = async () => {
     const amount = customAmount || rechargeAmount;
@@ -118,8 +78,7 @@ export default function WalletPage() {
       setRechargeDialogOpen(false);
       setCustomAmount('');
       fetchBalance();
-      setPage(1);
-      fetchTransactions();
+      window.dispatchEvent(new Event('balance-updated'));
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : '充值失败';
       toast.error(message);
@@ -127,8 +86,6 @@ export default function WalletPage() {
       setRechargeLoading(false);
     }
   };
-
-  const totalPages = Math.ceil(total / pageSize);
 
   return (
     <AppLayout>
@@ -175,109 +132,24 @@ export default function WalletPage() {
           </CardContent>
         </Card>
 
-        {/* 流水记录 */}
+        {/* 明细 Tabs */}
         <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-lg">账单明细</CardTitle>
-          </CardHeader>
-          <CardContent>
+          <CardContent className="pt-6">
             <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
               <TabsList className="mb-4">
-                <TabsTrigger value="all">全部</TabsTrigger>
-                <TabsTrigger value="recharge">充值</TabsTrigger>
-                <TabsTrigger value="consume">消费</TabsTrigger>
+                <TabsTrigger value="lines">资金明细</TabsTrigger>
+                <TabsTrigger value="daily">每日扣款记录</TabsTrigger>
+                <TabsTrigger value="tx">账单流水</TabsTrigger>
               </TabsList>
 
-              <TabsContent value={activeTab}>
-                {txLoading ? (
-                  <div className="py-16 flex justify-center">
-                    <Loader2 className="animate-spin h-8 w-8 text-blue-600" />
-                  </div>
-                ) : transactions.length === 0 ? (
-                  <div className="py-16 text-center">
-                    <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                      <Wallet className="w-8 h-8 text-gray-400" />
-                    </div>
-                    <p className="text-gray-500">暂无账单记录</p>
-                  </div>
-                ) : (
-                  <>
-                    <div className="space-y-3">
-                      {transactions.map((tx) => {
-                        const isRecharge = tx.type === 'recharge';
-                        const isPositive = isRecharge || tx.type === 'refund';
-                        const Icon = isPositive ? ArrowDownCircle : ArrowUpCircle;
-
-                        return (
-                          <div
-                            key={tx.id}
-                            className="flex items-center justify-between p-3 hover:bg-gray-50 rounded-lg transition-colors"
-                          >
-                            <div className="flex items-center gap-3">
-                              <div
-                                className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                                  isPositive
-                                    ? 'bg-green-100 text-green-600'
-                                    : 'bg-red-100 text-red-600'
-                                }`}
-                              >
-                                <Icon className="w-5 h-5" />
-                              </div>
-                              <div>
-                                <p className="text-sm font-medium text-gray-900">
-                                  {tx.description || (isRecharge ? '账户充值' : '消费扣款')}
-                                </p>
-                                <div className="flex items-center gap-2 mt-0.5">
-                                  <Clock className="w-3 h-3 text-gray-400" />
-                                  <span className="text-xs text-gray-400">
-                                    {new Date(tx.created_at).toLocaleString('zh-CN')}
-                                  </span>
-                                </div>
-                              </div>
-                            </div>
-                            <div className="text-right">
-                              <p
-                                className={`text-sm font-semibold ${
-                                  isPositive ? 'text-green-600' : 'text-red-600'
-                                }`}
-                              >
-                                {isPositive ? '+' : ''}{tx.amount}
-                              </p>
-                              <p className="text-xs text-gray-400 mt-0.5">
-                                余额：¥{tx.balance_after}
-                              </p>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-
-                    {/* 分页 */}
-                    {totalPages > 1 && (
-                      <div className="flex justify-center items-center gap-4 mt-6 pt-4 border-t border-gray-100">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setPage((p) => Math.max(1, p - 1))}
-                          disabled={page === 1}
-                        >
-                          上一页
-                        </Button>
-                        <span className="text-sm text-gray-500">
-                          第 {page} / {totalPages} 页
-                        </span>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                          disabled={page === totalPages}
-                        >
-                          下一页
-                        </Button>
-                      </div>
-                    )}
-                  </>
-                )}
+              <TabsContent value="lines">
+                <FangguoLinesTab />
+              </TabsContent>
+              <TabsContent value="daily">
+                <DailySettlementTab />
+              </TabsContent>
+              <TabsContent value="tx">
+                <TransactionsTab />
               </TabsContent>
             </Tabs>
           </CardContent>

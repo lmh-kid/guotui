@@ -241,22 +241,7 @@ export default function OrdersPage() {
                   <span className="text-gray-500">余额 </span>
                   <span className="font-semibold text-gray-900">¥{billing.balance.toFixed(2)}</span>
                 </div>
-                <div>
-                  <span className="text-gray-500">今日已推 </span>
-                  <span className="font-semibold text-gray-900">{billing.todayPushed} 单</span>
-                </div>
-                <div>
-                  <span className="text-gray-500">待结算 </span>
-                  <span className="font-semibold text-amber-600">¥{billing.unsettledAmount.toFixed(2)}</span>
-                  <span className="text-gray-400 text-xs">（次日自动结算）</span>
-                </div>
-                <div>
-                  <span className="text-gray-500">今日还可推 </span>
-                  <span className={`font-semibold ${billing.availableQuota > 0 ? 'text-blue-600' : 'text-red-500'}`}>
-                    {billing.availableQuota} 单
-                  </span>
-                </div>
-                <div className="text-gray-400 text-xs">推单 ¥0.50/单，按日结算</div>
+                <div className="text-gray-400">订单费用每日24时结算，运费结算会在订单发货后更新</div>
               </>
             )}
           </div>
@@ -406,7 +391,7 @@ export default function OrdersPage() {
                       <TableHead>店铺 / 工厂</TableHead>
                       <TableHead>订单状态</TableHead>
                       <TableHead>付款时间</TableHead>
-                      <TableHead className="text-right">数量/金额</TableHead>
+                      <TableHead className="text-right">数量</TableHead>
                       <TableHead>物流信息</TableHead>
                       <TableHead>操作</TableHead>
                     </TableRow>
@@ -489,7 +474,6 @@ export default function OrdersPage() {
                           </TableCell>
                           <TableCell className="text-right">
                             <div className="text-sm text-gray-900">x{order.quantity}</div>
-                            <div className="text-sm text-blue-600 font-medium">¥{order.price}</div>
                           </TableCell>
                           <TableCell className="text-sm text-gray-600">
                             {order.tracking_no ? (
