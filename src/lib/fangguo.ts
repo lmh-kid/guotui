@@ -251,6 +251,8 @@ interface FangguoGoodsPageSku {
 export interface FactoryCodeOptions {
   models: string[];
   pics: string[];
+  /** 材质 → 该材质下出现过的型号（商品库 SKU 组合聚合，型号与材质联动） */
+  modelsByMaterial: Record<string, string[]>;
 }
 
 // 材质颜色缓存（10 分钟，按工厂）
@@ -325,7 +327,10 @@ export function warmFactoryModelPicOptions(): void {
  * 故以商家商品库中已解码 SKU 的 shopModelCode/shopPicCode 去重聚合作为选项来源。
  */
 async function aggregateGoodsOptions(): Promise<Map<number, FactoryCodeOptions>> {
-  const byFactory = new Map<number, { models: Set<string>; pics: Set<string> }>();
+  const byFactory = new Map<
+    number,
+    { models: Set<string>; pics: Set<string>; modelsByMaterial: Map<string, Set<string>> }
+  >();
   const now = Date.now();
   const day = 86400_000;
   const seenGoods = new Set<string>();
@@ -356,11 +361,20 @@ async function aggregateGoodsOptions(): Promise<Map<number, FactoryCodeOptions>>
               if (fid == null) continue;
               let bucket = byFactory.get(fid);
               if (!bucket) {
-                bucket = { models: new Set(), pics: new Set() };
+                bucket = { models: new Set(), pics: new Set(), modelsByMaterial: new Map() };
                 byFactory.set(fid, bucket);
               }
               if (sku.shopModelCode) bucket.models.add(sku.shopModelCode);
               if (sku.shopPicCode) bucket.pics.add(sku.shopPicCode);
+              // 材质→型号组合（型号与材质联动数据源）
+              if (sku.shopMaterialCode && sku.shopModelCode) {
+                let scoped = bucket.modelsByMaterial.get(sku.shopMaterialCode);
+                if (!scoped) {
+                  scoped = new Set<string>();
+                  bucket.modelsByMaterial.set(sku.shopMaterialCode, scoped);
+                }
+                scoped.add(sku.shopModelCode);
+              }
             }
           }
           if (list.length < 100) break;
@@ -373,9 +387,14 @@ async function aggregateGoodsOptions(): Promise<Map<number, FactoryCodeOptions>>
 
   const result = new Map<number, FactoryCodeOptions>();
   for (const [fid, bucket] of byFactory) {
+    const modelsByMaterial: Record<string, string[]> = {};
+    for (const [material, scoped] of bucket.modelsByMaterial) {
+      modelsByMaterial[material] = Array.from(scoped).sort();
+    }
     result.set(fid, {
       models: Array.from(bucket.models).sort(),
       pics: Array.from(bucket.pics).sort(),
+      modelsByMaterial,
     });
   }
 

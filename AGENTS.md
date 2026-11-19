@@ -125,8 +125,9 @@
 - `src/lib/fangguo.ts` 内封装：`getMaterialColors(factoryId)`（材质→颜色级联）、`getMerchantCodeOptions()`（型号/图号聚合）、`saveProduct()`
 - 型号/图号数据源：`warehouse/shop/goods/page` 商品库分页聚合（时间窗 ≤7 天，多窗口扫描），**6 小时全局缓存**（globalThis.__fgOptionsCache）；首次访问惰性加载，订单列表接口触发预热，`optionsReady` 标识是否就绪
 - 官方 `basic/models/v1` 接口探测 30+ 参数组合均报「缺少商家或工厂id」不可用（文档无参数示例），故型号选项改用商品库聚合替代
+- 型号与材质联动：聚合时同步构建「材质→型号」映射（`FactoryCodeOptions.modelsByMaterial`），弹窗选材质后型号下拉仅显示该材质出现过的型号；材质无商品库数据时回退全量；切换材质时若当前型号不在新材质候选中则清空重选
 - 保存后调 `refreshLiveOrder(tid)` 刷新实时缓存使改动即时生效
-- 前端：`src/components/merchant-code-dialog.tsx`（960px 弹窗，按 SKU 行编辑材质/颜色/型号/图号，材质→颜色级联，全部为可搜索下拉 `combo-select.tsx`）；仅 pending/decoded 状态显示入口
+- 前端：`src/components/merchant-code-dialog.tsx`（960px 弹窗，按 SKU 行编辑材质/颜色/型号/图号，材质→颜色/型号双重级联，全部为可搜索下拉 `combo-select.tsx`）；仅 pending/decoded 状态显示入口
 
 **方果状态映射**（dfStatus: 0待整理 1待推送 2已反审 3工厂待审 4生产中 5已打包；deliverTime 有值→shipped）：
 - 0/2 → status=pending；1 → decoded；3 → pushed；4/5 → production

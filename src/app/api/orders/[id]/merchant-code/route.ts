@@ -120,6 +120,7 @@ export async function GET(
     let materials: FangguoMaterialColor[] = [];
     let models: string[] = [];
     let pics: string[] = [];
+    let modelsByMaterial: Record<string, string[]> = {};
     let optionsReady = true;
     if (factoryId != null) {
       const [materialList, goodsOptions] = await Promise.all([
@@ -131,6 +132,7 @@ export async function GET(
       if (opts) {
         models = opts.models;
         pics = opts.pics;
+        modelsByMaterial = opts.modelsByMaterial || {};
       } else {
         optionsReady = false; // 首次访问商品库聚合尚未完成，型号/图号先手填
       }
@@ -160,7 +162,7 @@ export async function GET(
         dfStatus: detail.dfStatus,
       },
       items,
-      options: { materials, models, pics },
+      options: { materials, models, pics, modelsByMaterial },
       optionsReady,
     });
   } catch (err: unknown) {

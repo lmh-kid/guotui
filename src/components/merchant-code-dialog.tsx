@@ -50,6 +50,8 @@ interface MerchantCodeResponse {
     materials: MaterialOption[];
     models: string[];
     pics: string[];
+    /** 材质 → 可选型号（商品库聚合，型号与材质联动） */
+    modelsByMaterial?: Record<string, string[]>;
   };
   /** false = 型号/图号选项尚在后台聚合（首次访问），前端可轮询刷新 */
   optionsReady?: boolean;
@@ -192,6 +194,17 @@ export default function MerchantCodeDialog({ orderNo, onClose, onSuccess }: Merc
     [materialOptions]
   );
 
+  /** 型号选项与材质联动：优先取该材质下出现过的型号，无数据时回退全量；当前已选值始终保留在候选中 */
+  const modelOptionsFor = useCallback(
+    (materialCode: string, currentModel: string | null): string[] => {
+      const scoped = materialCode ? options.modelsByMaterial?.[materialCode] : undefined;
+      const base = scoped && scoped.length > 0 ? scoped : options.models;
+      if (currentModel && !base.includes(currentModel)) return [currentModel, ...base];
+      return base;
+    },
+    [options.modelsByMaterial, options.models]
+  );
+
   const updateDraft = (id: string, patch: Partial<DraftItem>) => {
     setDrafts((prev) => prev.map((d) => (d.id === id ? { ...d, ...patch } : d)));
   };
@@ -199,9 +212,16 @@ export default function MerchantCodeDialog({ orderNo, onClose, onSuccess }: Merc
   const handleMaterialChange = (id: string, materialCode: string) => {
     const colors = colorsOf(materialCode, null);
     // 材质切换后颜色联动：优先保留同色，否则取第一个
+    // 型号联动：该材质在商品库有型号数据且当前型号不在其中时清空，需重新选择
+    const draft = drafts.find((d) => d.id === id);
+    const currentModel = draft?.modelCode ?? '';
+    const scoped = options.modelsByMaterial?.[materialCode];
+    const keepModel =
+      !scoped || scoped.length === 0 || !currentModel || scoped.includes(currentModel);
     updateDraft(id, {
       materialCode,
       colorCode: colors.length > 0 ? colors[0].colorCode : '',
+      modelCode: keepModel ? currentModel : '',
     });
   };
 
@@ -355,10 +375,10 @@ export default function MerchantCodeDialog({ orderNo, onClose, onSuccess }: Merc
                         型号 <span className="text-red-500">*</span>
                       </label>
                       <ComboSelect
-                        options={options.models}
+                        options={modelOptionsFor(draft.materialCode, item.modelCode)}
                         value={draft.modelCode}
                         onValueChange={(v) => updateDraft(item.id, { modelCode: v })}
-                        placeholder={optionsReady ? '选择型号' : '候选加载中...'}
+                        placeholder={optionsReady ? (draft.materialCode ? '选择型号' : '先选材质可缩小型号范围') : '候选加载中...'}
                         searchPlaceholder="输入型号关键字..."
                       />
                     </div>
