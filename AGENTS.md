@@ -113,8 +113,9 @@
   - exclude（排除）：充值类（运营方在方果充值）
   - unknown（未知类型）：保守跳过不入账，管理员账单可见
 - **推单时**：系统不即时扣费，仅插入 push_records（fee_applied=false，UNIQUE 幂等防重复计费）；方果侧推单即真实扣材料费（prehold），由当天日结统一扣系统余额
-- **推单服务费口径（三处统一：settleUserDay / 钱包每日扣款 / 管理端日结账单）**：按**当天全部推送订单**计（含方果后台直推）——用方果「扣费·订单推送」prehold 预扣流水去重 tid 统计（每单一条，重推/取消重推去重算 1 单）；当天流水未同步时由 push_records.order_no 兜底合并（`pushedTids = new Set<string>()`，`pushCount = pushedTids.size`）。push_records 仍记录系统推单（UNIQUE 幂等）+ 参与结算标记，但不再单独作为计费依据；资金明细页 0.5 服务费按推送日归属账期（查窗口内订单最早 prehold settle_date 构建 preholdDateByTid，50 分批 .in），单日视图与日结完全对齐
-- **跨日订单服务费补收（重要）**：订单「推送日 11-18 → 发货日 11-19」跨账期时预扣记在推送日账期；若推送日早于 settlement_start_date（不追账），服务费将永远收不到。故对当天有扣费流水（charge）但预扣不在追账账期（无 prehold 或 prehold.settle_date < startDate）的订单，在扣费账期补收 0.5（`chargedTids - pushedTids` 后逐 tid 查最早 prehold settle_date 判定）；正常运营（预扣与扣费各在其账期且均 ≥ startDate）不会重复，此时推送日账期已收过。实测 11-19：15 单当天推 + 2 单跨日补收 = 17 单 = 截图方果记账口径
+- **推单服务费口径（三处统一：settleUserDay / 钱包每日扣款 / 管理端日结账单）**：按**当天（上海自然日 0:00-23:59:59，=方果 settle_date 账期）全部推送订单**计（含方果后台直推）——用方果「扣费·订单推送」prehold 预扣流水去重 tid 统计（每单一条，重推/取消重推去重算 1 单）；当天流水未同步时由 push_records.order_no 兜底合并（`pushedTids = new Set<string>()`，`pushCount = pushedTids.size`）。push_records 仍记录系统推单（UNIQUE 幂等）+ 参与结算标记，但不再单独作为计费依据；资金明细页 0.5 服务费只计入「行日期 = 该单首次推送日（最早 prehold settle_date）」的行，单日视图与日结完全对齐
+- **服务费不跨日补收**：订单推送日与发货日跨账期时（如 11-18 推、11-19 发货），服务费只在**推送日账期**收取，扣费账期不补收（实测 11-19 = 当天推送 15 单 × 0.5 = 7.50，不含 18 号推的 2 单）；推送日早于 settlement_start_date 的单服务费不收（不追账）
+- **材料费跨账期去重（重要）**：同一订单 prehold（推送日账期）与 charge（发货日账期）跨账期时，材料费已在推送日账期按 max(预扣,实扣) 入账，实扣账期只补差额（实扣 > 预扣时，`priorPaidByTid` 查更早账期 prehold 总额）。推送日早于 startDate（不追账）的订单在实扣账期收全额，否则该单材料费永远收不到。避免同一单材料费双扣
 - **定时日结（日清日结）**：每天 00:00（Asia/Shanghai，server.ts node-cron）执行 `runDailySettlement()`：
   1. 同步最近 7 天流水 upsert 进 fangguo_transactions（id 幂等，容忍补录/补跑；settled 标记不在 upsert 列，不被覆盖）
   2. 结算所有账期 ≤ 今天（settleCutoff=today，0 点跑即昨日账期）的未结算数据，**真实扣余额**：每用户每账期 = Σ材料费（按订单 tid 取 max(预扣, 实扣)）+ Σ运费等实扣 + Σ退费 + 0.5×当日推单数，写一条 consume 流水（描述「日结 YYYY-MM-DD：推单 X 单 ¥Y + 材运费 ¥Z」），乐观锁扣余额（3 次重试，**允许负余额**），total_consume 累加绝对值
