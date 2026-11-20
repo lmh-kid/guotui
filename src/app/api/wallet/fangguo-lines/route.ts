@@ -18,11 +18,15 @@ import { PUSH_FEE } from '@/lib/billing';
  *   展示层合成不入库（实际扣款在日结统一结算）
  * - 合计 = 材料费 + 运费 + 手动扣费
  *
+ * 计费时间口径（与方果后台对齐）：行的 time 取「推单时刻」（最早一笔预扣流水的
+ * transaction_time），而非发货转实扣时刻；行整体归属推送日账期（预扣 settle_date），
+ * 推送日不在查询窗口内的行不展示（昨日推、今日发货的单归昨日，不出现在当天列表）
+ *
  * 数据源均为本地库已同步数据（日结任务/手动结算时同步，近 7 天窗口）
  */
 interface OrderRow {
   order_no: string; // 订单号（方果 tid；充值等无订单流水为空）
-  time: string; // 计费时间（该订单最近一次流水时间，统一 UTC ISO）
+  time: string; // 计费时间 = 推单时刻（最早预扣流水时间，上海本地时间，与方果一致）
   store_name: string | null;
   recharge: number;
   material: number; // 材料费净额（实扣或预扣 - 退回）
@@ -161,16 +165,17 @@ export async function GET(req: NextRequest) {
       // unknown 不入账（与日结口径一致），可在每日对账中查看
     }
 
-    // 3. 推单服务费归属推送日账期：查窗口内订单的「扣费·订单推送」预扣流水（推送
-    //    动作），取每单最早 settle_date（=首次推送日）。昨日推送今日发货的单，其
-    //    ¥0.50 记昨日账上，与日结口径完全对齐（消除跨日错位）
-    const preholdDateByTid = new Map<string, string>();
+    // 3. 推单服务费归属推送日账期 + 计费时间取推单时刻：查窗口内订单的「扣费·订单推送」
+    //    预扣流水（推送动作），取每单最早 settle_date（=首次推送日）与其 transaction_time
+    //    （=推单时刻）。昨日推送今日发货转实扣的单，行仍归昨日账期、时间显示昨日推单时刻，
+    //    与方果后台完全一致（消除跨日错位）
+    const preholdInfoByTid = new Map<string, { date: string; time: string }>();
     const tids = [...accMap.keys()];
     for (let i = 0; i < tids.length; i += 50) {
       const batch = tids.slice(i, i + 50);
       const { data: preholds, error: preErr } = await supabase
         .from('fangguo_transactions')
-        .select('tid, settle_date')
+        .select('tid, settle_date, transaction_time')
         .eq('user_id', user.id)
         .eq('kind', 'prehold')
         .in('tid', batch);
@@ -179,8 +184,11 @@ export async function GET(req: NextRequest) {
         const tid = String(ph.tid ?? '');
         const d = String(ph.settle_date ?? '');
         if (!tid || !d) continue;
-        const prev = preholdDateByTid.get(tid);
-        if (!prev || d < prev) preholdDateByTid.set(tid, d); // 取最早 = 首次推送日
+        const t = shTime(ph.transaction_time);
+        const prev = preholdInfoByTid.get(tid);
+        if (!prev || d < prev.date || (d === prev.date && t && t < prev.time)) {
+          preholdInfoByTid.set(tid, { date: d, time: t }); // 取最早 = 首次推送日/推单时刻
+        }
       }
     }
 
@@ -189,15 +197,20 @@ export async function GET(req: NextRequest) {
     const round2 = (x: number) => Math.round(x * 100) / 100;
     const list: OrderRow[] = [];
     for (const [tid, a] of accMap) {
-      // 推单服务费 ¥0.50 归属推送日账期：仅当本行日期（上海自然日）= 该单首次
-      // 推送日（最早预扣 settle_date）时计 0.5——与日结「服务费只在推送日账期收、
-      // 不跨日补收」完全对齐；预扣流水缺失（同步窗口外）时归本行扣费日
-      const preholdDate = preholdDateByTid.get(tid);
-      const rowDate = a.time ? a.time.slice(0, 10) : ''; // a.time 已是上海本地时间
-      const manual = preholdDate ? (preholdDate === rowDate ? PUSH_FEE : 0) : PUSH_FEE;
+      // 行归属账期 = 推送日（最早预扣 settle_date）；推送日早于结算起始日
+      // （不追账）或预扣流水缺失时回退到本行扣费日
+      const info = preholdInfoByTid.get(tid);
+      const usePushDay = !!info && (!startDate || info.date >= startDate);
+      const bookingDate = usePushDay && info ? info.date : a.time.slice(0, 10);
+      // 归属日不在查询窗口内则整行不展示（昨日推、今日发货的单归昨日，不进当天列表）
+      if (bookingDate < since) continue;
+      // 服务费只在推送日账期收（不跨日补收；推送日早于起始日的不追账）；
+      // 预扣流水缺失（同步窗口外）时归本行扣费日收
+      const manual = usePushDay || !info ? PUSH_FEE : 0;
       const row: OrderRow = {
         order_no: tid,
-        time: a.time,
+        // 计费时间展示推单时刻（与方果后台一致），非发货转实扣时刻
+        time: usePushDay && info?.time ? info.time : a.time,
         store_name: a.store,
         recharge: 0,
         // 预扣与实扣是同一笔钱的两个阶段：取绝对值较大者（未发货计预扣、已发货计实扣）
