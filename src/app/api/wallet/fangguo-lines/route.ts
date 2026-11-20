@@ -180,12 +180,12 @@ export async function GET(req: NextRequest) {
     const round2 = (x: number) => Math.round(x * 100) / 100;
     const list: OrderRow[] = [];
     for (const [tid, a] of accMap) {
-      // 推单服务费 ¥0.50 与日结口径对齐：推送日在追账范围内且在本窗口 → 归属推送日；
-      // 推送日缺失或早于结算起始日（不追账）→ 日结在该单扣费账期补收，本窗口计 0.5
+      // 推单服务费 ¥0.50 归属推送日账期：仅当本行日期（上海自然日）= 该单首次
+      // 推送日（最早预扣 settle_date）时计 0.5——与日结「服务费只在推送日账期收、
+      // 不跨日补收」完全对齐；预扣流水缺失（同步窗口外）时归本行扣费日
       const preholdDate = preholdDateByTid.get(tid);
-      const windowed = preholdDate && preholdDate >= since;
-      const crossDay = !preholdDate || (startDate && preholdDate < startDate);
-      const manual = windowed || crossDay ? PUSH_FEE : 0;
+      const rowDate = a.time ? shanghaiDateStr(new Date(a.time).getTime()) : '';
+      const manual = preholdDate ? (preholdDate === rowDate ? PUSH_FEE : 0) : PUSH_FEE;
       const row: OrderRow = {
         order_no: tid,
         time: a.time,

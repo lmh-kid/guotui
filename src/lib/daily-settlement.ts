@@ -474,52 +474,55 @@ async function settleUserDay(
       refundTotal += amount; // 退费无条件冲抵（材料/运费退费统一回补）
     }
   }
-  for (const a of matByTid.values()) {
+  // 材料费跨账期去重：订单「推送日(prehold) → 发货日(charge)」跨账期时，材料费
+  // 已在推送日账期按 max(预扣,实扣) 入账；本账期只补差额（实扣 > 预扣时），否则 0。
+  // 推送日早于结算起始日（不追账）的订单，本账期收全额——否则该单材料费永远收不到。
+  const chargeTids = [...matByTid.entries()].filter(([, a]) => a.charge > 0).map(([t]) => t);
+  const priorPaidByTid = new Map<string, number>();
+  if (chargeTids.length > 0 && startDate) {
+    for (let i = 0; i < chargeTids.length; i += 50) {
+      const chunk = chargeTids.slice(i, i + 50);
+      const { data: preLines } = await supabase
+        .from("fangguo_transactions")
+        .select("tid, processed_amount")
+        .eq("user_id", g.user)
+        .eq("kind", "prehold")
+        .in("tid", chunk)
+        .lt("settle_date", g.date)
+        .gte("settle_date", startDate);
+      for (const l of preLines ?? []) {
+        const tid = String(l.tid ?? "");
+        if (!tid) continue;
+        priorPaidByTid.set(
+          tid,
+          (priorPaidByTid.get(tid) ?? 0) + Math.abs(parseFloat(l.processed_amount as string))
+        );
+      }
+    }
+  }
+  for (const [tid, a] of matByTid) {
     // 预扣与实扣是同一笔钱的两个阶段：取绝对值较大者，避免双计 / 漏计
-    materialFreight -= Math.max(a.prehold, a.charge);
+    const full = Math.max(a.prehold, a.charge);
+    const prior = priorPaidByTid.get(tid) ?? 0;
+    materialFreight -= Math.max(0, full - prior);
   }
   // 结算起始日保护：早于起始日的账期不追溯材运费（服务费照常）
   if (startDate && g.date < startDate) {
     materialFreight = 0;
     refundTotal = 0;
   }
-  // 推单数口径：当天全部推送订单（含方果后台直推）——按方果「扣费·订单推送」
-  // 预扣流水去重 tid 统计（推送必然产生预扣冻结）；当天流水尚未同步时由
-  // 系统推单记录（push_records.order_no）兜底合并，重推/取消重推同一单去重算 1 单
+  // 推单数口径：当天（上海自然日 0:00-23:59:59，=方果流水 settle_date 账期）全部
+  // 推送订单（含方果后台直推）——按方果「扣费·订单推送」预扣流水去重 tid 统计
+  // （推送必然产生预扣冻结）；当天流水尚未同步时由系统推单记录
+  // （push_records.order_no）兜底合并，重推/取消重推同一单去重算 1 单。
+  // 不跨日补收：订单推送日与发货日跨账期时，服务费只在推送日账期收取
   const pushedTids = new Set<string>();
-  const chargedTids = new Set<string>(); // 当天产生扣费流水的订单（用于跨日订单补收服务费）
   for (const l of dayLines ?? []) {
     if (!l.tid) continue;
     if (l.kind === "prehold") pushedTids.add(l.tid);
-    else if (l.kind === "charge") chargedTids.add(l.tid);
   }
   for (const p of dayPushes ?? []) {
     if (p.order_no) pushedTids.add(p.order_no);
-  }
-  // 跨日补收：订单「推送日 → 发货日」跨账期时，预扣记在推送日账期；若推送日早于
-  // 结算起始日（不追账），该单服务费将永远收不到。对当天有扣费、但预扣不在追账
-  // 账期内的订单，在本账期补收 0.5——正常运营（预扣与扣费各在其账期且均已追账）
-  // 不会重复，因为此时推送日账期已收过 0.5
-  const crossDayTids = [...chargedTids].filter((t) => !pushedTids.has(t));
-  if (crossDayTids.length > 0) {
-    const { data: preLines } = await supabase
-      .from("fangguo_transactions")
-      .select("tid, settle_date")
-      .eq("user_id", g.user)
-      .eq("kind", "prehold")
-      .in("tid", crossDayTids);
-    const preDateByTid = new Map<string, string>();
-    for (const l of preLines ?? []) {
-      const tid = String(l.tid ?? "");
-      const d = String(l.settle_date ?? "").slice(0, 10);
-      if (!tid || !d) continue;
-      const prev = preDateByTid.get(tid);
-      if (!prev || d < prev) preDateByTid.set(tid, d);
-    }
-    for (const t of crossDayTids) {
-      const preDate = preDateByTid.get(t);
-      if (!preDate || (startDate && preDate < startDate)) pushedTids.add(t);
-    }
   }
   const pushCount = pushedTids.size;
   const pushFee = parseFloat((pushCount * PUSH_FEE).toFixed(2)); // 正数（展示用）
