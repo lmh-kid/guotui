@@ -113,7 +113,7 @@
   - exclude（排除）：充值类（运营方在方果充值）
   - unknown（未知类型）：保守跳过不入账，管理员账单可见
 - **推单时**：系统不即时扣费，仅插入 push_records（fee_applied=false，UNIQUE 幂等防重复计费）；方果侧推单即真实扣材料费（prehold），由当天日结统一扣系统余额
-- **推单服务费口径（三处统一：settleUserDay / 钱包每日扣款 / 管理端日结账单）**：按**当天（上海自然日 0:00-23:59:59，=方果 settle_date 账期）全部推送订单**计（含方果后台直推）——用方果「扣费·订单推送」prehold 预扣流水去重 tid 统计（每单一条，重推/取消重推去重算 1 单）；当天流水未同步时由 push_records.order_no 兜底合并（`pushedTids = new Set<string>()`，`pushCount = pushedTids.size`）。push_records 仍记录系统推单（UNIQUE 幂等）+ 参与结算标记，但不再单独作为计费依据；资金明细页 0.5 服务费只计入「行日期 = 该单首次推送日（最早 prehold settle_date）」的行，单日视图与日结完全对齐
+- **推单服务费口径（三处统一：settleUserDay / 钱包每日扣款 / 管理端日结账单）**：按**当天（上海自然日 0:00-23:59:59，=方果 settle_date 账期）全部推送订单**计（含方果后台直推）——用方果「扣费·订单推送」prehold 预扣流水去重 tid 统计（每单一条，重推/取消重推去重算 1 单）；当天流水未同步时由 push_records.order_no 兜底合并（`pushedTids = new Set<string>()`，`pushCount = pushedTids.size`）。push_records 仍记录系统推单（UNIQUE 幂等）+ 参与结算标记，但不再单独作为计费依据；资金明细页 0.5 服务费只计入「行日期 = 该单首次推送日（最早 prehold settle_date）」的行，单日视图与日结完全对齐；**资金明细行口径（fangguo-lines）**：行的 `time` 取**推单时刻**（最早一笔 prehold 的 transaction_time，上海本地时间，与方果后台显示一致，非发货转实扣时刻），整行费用（材料 max(预扣,实扣) + 运费 + 0.5）归属**推送日**（最早 prehold settle_date；推送日早于 settlement_start_date 或预扣缺失时回退扣费日），归属日不在查询窗口内的行不展示——昨日推送、今日发货的单只出现在昨日列表，不重复进出当天列表
 - **服务费不跨日补收**：订单推送日与发货日跨账期时（如 11-18 推、11-19 发货），服务费只在**推送日账期**收取，扣费账期不补收（实测 11-19 = 当天推送 15 单 × 0.5 = 7.50，不含 18 号推的 2 单）；推送日早于 settlement_start_date 的单服务费不收（不追账）
 - **材料费跨账期去重（重要）**：同一订单 prehold（推送日账期）与 charge（发货日账期）跨账期时，材料费已在推送日账期按 max(预扣,实扣) 入账，实扣账期只补差额（实扣 > 预扣时，`priorPaidByTid` 查更早账期 prehold 总额）。推送日早于 startDate（不追账）的订单在实扣账期收全额，否则该单材料费永远收不到。避免同一单材料费双扣
 - **定时日结（日清日结）**：每天 00:00（Asia/Shanghai，server.ts node-cron）执行 `runDailySettlement()`：

@@ -205,6 +205,9 @@ export default function FangguoLinesTab() {
         <p className="mt-2 text-xs text-gray-400">
           材料费在推单时按预扣即真实扣款（发货转实扣不二次扣、取两者较大者），退费自动冲抵；推单服务费 ¥0.50/单按推送日归属账期（含方果后台直推），仅展示不入库，实际扣款在每日结算统一计入
         </p>
+        <p className="mt-1 text-xs text-gray-400">
+          计费时间取推单时刻（与方果后台一致），整行费用归属推送日账期：昨日推送、今日发货的单显示在昨日，不重复出现在今日列表
+        </p>
       </CardContent>
     </Card>
   );
