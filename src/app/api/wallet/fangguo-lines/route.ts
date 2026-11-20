@@ -33,8 +33,17 @@ interface OrderRow {
   total: number; // 合计 = 材料费 + 运费 + 手动扣费
 }
 
-// 时间统一转 UTC ISO（流水为 UTC ISO、推单 created_at 为 +08:00 带纳秒格式，直接字符串比较会错序）
-const iso = (t?: string | null): string => (t ? new Date(t).toISOString() : '');
+// 时间统一转为「上海本地时间」字符串 YYYY-MM-DD HH:mm:ss（流水为 UTC ISO、
+// 推单 created_at 为 +08:00 带纳秒格式，直接字符串比较会错序）。
+// 注意：不能返回 UTC ISO——前端直接展示，北京时间 0:00-7:59 的流水会被显示成前一天
+const shTime = (t?: string | null): string => {
+  if (!t) return '';
+  const d = new Date(t);
+  if (Number.isNaN(d.getTime())) return '';
+  const s = new Date(d.getTime() + 8 * 3600_000);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${s.getUTCFullYear()}-${p(s.getUTCMonth() + 1)}-${p(s.getUTCDate())} ${p(s.getUTCHours())}:${p(s.getUTCMinutes())}:${p(s.getUTCSeconds())}`;
+};
 
 export async function GET(req: NextRequest) {
   const token = req.headers.get('x-session');
@@ -112,7 +121,7 @@ export async function GET(req: NextRequest) {
       const abs = Math.abs(amount);
       const name = String(l.fee_name_type ?? '');
       const kind = String(l.kind);
-      const t = iso(l.transaction_time);
+      const t = shTime(l.transaction_time);
       const store = l.store_name ?? null;
       const tid = l.tid && String(l.tid).length > 0 ? String(l.tid) : null;
 
@@ -184,7 +193,7 @@ export async function GET(req: NextRequest) {
       // 推送日（最早预扣 settle_date）时计 0.5——与日结「服务费只在推送日账期收、
       // 不跨日补收」完全对齐；预扣流水缺失（同步窗口外）时归本行扣费日
       const preholdDate = preholdDateByTid.get(tid);
-      const rowDate = a.time ? shanghaiDateStr(new Date(a.time).getTime()) : '';
+      const rowDate = a.time ? a.time.slice(0, 10) : ''; // a.time 已是上海本地时间
       const manual = preholdDate ? (preholdDate === rowDate ? PUSH_FEE : 0) : PUSH_FEE;
       const row: OrderRow = {
         order_no: tid,
