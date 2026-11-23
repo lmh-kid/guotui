@@ -28,6 +28,8 @@ import {
   CheckCircle2,
   ExternalLink,
   Search,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
@@ -97,6 +99,8 @@ export default function ImagesPage() {
   const [creating, setCreating] = useState(false);
   const [sessionToken, setSessionToken] = useState('');
   const [keyword, setKeyword] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(24);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(
@@ -340,6 +344,11 @@ export default function ImagesPage() {
     return files.filter((file) => file.name.toLowerCase().includes(keywordTrimmed));
   }, [data?.files, keywordTrimmed]);
 
+  const totalPages = Math.max(1, Math.ceil(filteredFiles.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const startIndex = (currentPage - 1) * pageSize;
+  const pagedFiles = filteredFiles.slice(startIndex, startIndex + pageSize);
+
   return (
     <AppLayout>
       <div className="p-4 lg:p-6 space-y-4">
@@ -384,7 +393,10 @@ export default function ImagesPage() {
             </span>
             <button
               type="button"
-              onClick={() => setCategory('')}
+              onClick={() => {
+                setCategory('');
+                setPage(1);
+              }}
               className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
                 category === '' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
               }`}
@@ -395,7 +407,10 @@ export default function ImagesPage() {
               <button
                 key={item}
                 type="button"
-                onClick={() => setCategory(item)}
+                onClick={() => {
+                  setCategory(item);
+                  setPage(1);
+                }}
                 className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
                   category === item ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                 }`}
@@ -517,7 +532,10 @@ export default function ImagesPage() {
                 <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                 <Input
                   value={keyword}
-                  onChange={(e) => setKeyword(e.target.value)}
+                  onChange={(e) => {
+                    setKeyword(e.target.value);
+                    setPage(1);
+                  }}
                   placeholder="搜索图片名称"
                   className="pl-8 pr-8 h-9"
                 />
@@ -552,7 +570,7 @@ export default function ImagesPage() {
               </div>
             ) : (
               <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,112px)]">
-                {filteredFiles.map((file) => (
+                {pagedFiles.map((file) => (
                   <button
                     key={file.path}
                     type="button"
@@ -580,6 +598,53 @@ export default function ImagesPage() {
                     </div>
                   </button>
                 ))}
+              </div>
+            )}
+
+            {filteredFiles.length > 0 && (
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-gray-100 pt-3">
+                <div className="text-xs text-gray-500">
+                  共 {filteredFiles.length} 张
+                  <span className="mx-1">·</span>
+                  当前 {startIndex + 1}-{Math.min(startIndex + pageSize, filteredFiles.length)} 张
+                </div>
+                <div className="flex items-center gap-2">
+                  <select
+                    value={pageSize}
+                    onChange={(e) => {
+                      setPageSize(Number(e.target.value));
+                      setPage(1);
+                    }}
+                    className="h-8 rounded-md border border-gray-200 bg-white px-2 text-xs text-gray-600"
+                  >
+                    {[24, 48, 96].map((size) => (
+                      <option key={size} value={size}>
+                        每页 {size} 张
+                      </option>
+                    ))}
+                  </select>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 px-2"
+                    disabled={currentPage <= 1}
+                    onClick={() => setPage(Math.max(1, currentPage - 1))}
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </Button>
+                  <span className="min-w-[56px] text-center text-xs text-gray-600">
+                    {currentPage} / {totalPages}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 px-2"
+                    disabled={currentPage >= totalPages}
+                    onClick={() => setPage(Math.min(totalPages, currentPage + 1))}
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </Button>
+                </div>
               </div>
             )}
           </CardContent>
