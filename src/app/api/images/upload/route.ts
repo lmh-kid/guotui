@@ -1,14 +1,14 @@
 import { NextResponse } from 'next/server';
 import { Readable } from 'node:stream';
-import { getCurrentUser } from '@/lib/auth-utils';
+import { checkIsAdmin, getCurrentUser } from '@/lib/auth-utils';
 import { getSupabaseAdminClient } from '@/storage/database/supabase-client';
 import {
   IN_MEMORY_UPLOAD_LIMIT,
   MAX_UPLOAD_BYTES,
   SynologyError,
-  buildUserDir,
   findFile,
   isImageFile,
+  resolveUserDir,
   sanitizeFileName,
   sanitizeSegment,
   uploadImage,
@@ -45,7 +45,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: '仅支持上传图片文件（png/jpg/jpeg/webp/gif/bmp/tif/heic）' }, { status: 415 });
   }
 
-  const dirPath = buildUserDir(user.account, category);
+  const isAdmin = await checkIsAdmin(user.id);
+  const dirPath = resolveUserDir(user.account, isAdmin, category);
 
   try {
     // 上传前判重：NAS 同名文件（overwrite=false 时群晖会静默跳过，因此必须先查）

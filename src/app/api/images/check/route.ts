@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
-import { getCurrentUser } from '@/lib/auth-utils';
-import { SynologyError, buildUserDir, findFile, sanitizeFileName, sanitizeSegment } from '@/lib/synology';
+import { checkIsAdmin, getCurrentUser } from '@/lib/auth-utils';
+import { SynologyError, findFile, resolveUserDir, sanitizeFileName, sanitizeSegment } from '@/lib/synology';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -29,7 +29,8 @@ export async function GET(request: Request) {
   }
 
   try {
-    const dirPath = buildUserDir(user.account, category);
+    const isAdmin = await checkIsAdmin(user.id);
+    const dirPath = resolveUserDir(user.account, isAdmin, category);
     const duplicates: Array<{ name: string; size: number; mtime: number }> = [];
 
     for (const rawName of rawNames) {

@@ -271,6 +271,34 @@ export function buildUserDir(account: string, category?: string): string {
   return parts.join('/');
 }
 
+/**
+ * 当前用户实际使用的根目录：
+ * - 管理员：直接使用运营方给定的 IMAGE_ROOT（即 28-九因科技 本身）
+ * - 普通用户：IMAGE_ROOT/{账号名}
+ */
+export function resolveUserDir(account: string, isAdmin: boolean, category?: string): string {
+  const safeCategory = category ? sanitizeSegment(category) : '';
+  if (isAdmin) {
+    return safeCategory ? `${IMAGE_ROOT}/${safeCategory}` : IMAGE_ROOT;
+  }
+  return buildUserDir(account, safeCategory);
+}
+
+/** 目录是否真实存在（与「空目录」区分开，供前端展示创建按钮） */
+export async function folderExistsAt(folderPath: string): Promise<boolean> {
+  try {
+    await withSid((sid) =>
+      callApi('SYNO.FileStation.List', '2', 'list', { folder_path: folderPath }, sid),
+    );
+    return true;
+  } catch (err) {
+    if (err instanceof SynologyError && !err.relogin && err.message.includes('错误码 408')) {
+      return false;
+    }
+    throw err;
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* 目录操作                                                            */
 /* ------------------------------------------------------------------ */

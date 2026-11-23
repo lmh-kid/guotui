@@ -23,6 +23,7 @@ import {
   RefreshCw,
   Loader2,
   Folder,
+  FolderPlus,
   X,
   AlertTriangle,
   CheckCircle2,
@@ -41,9 +42,11 @@ interface NasFile {
 
 interface ImagesResponse {
   account: string;
+  isAdmin: boolean;
   userDir: string;
   dirPath: string;
   category: string;
+  dirExists: boolean;
   categories: string[];
   suggestedCategories: string[];
   files: NasFile[];
@@ -91,6 +94,7 @@ export default function ImagesPage() {
   const [preview, setPreview] = useState<NasFile | null>(null);
   const [duplicatePrompt, setDuplicatePrompt] = useState<{ names: string[]; files: File[] } | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [creating, setCreating] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(
@@ -112,6 +116,22 @@ export default function ImagesPage() {
     load(category);
   }, [category, load]);
 
+  const createDir = useCallback(async () => {
+    setCreating(true);
+    try {
+      await apiRequest<{ success: boolean; dirPath: string }>('/api/images/mkdir', {
+        method: 'POST',
+        body: JSON.stringify({ category }),
+      });
+      toast.success('目录已创建');
+      await load(category);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '创建目录失败');
+    } finally {
+      setCreating(false);
+    }
+  }, [category, load]);
+
   const categoryOptions = useMemo(() => {
     const merged = new Set<string>();
     for (const item of data?.categories ?? []) merged.add(item);
@@ -119,7 +139,6 @@ export default function ImagesPage() {
     return Array.from(merged);
   }, [data]);
 
-  const runningRef = useRef(0);
   const queueRef = useRef<UploadTask[]>([]);
   const overwriteRef = useRef(false);
 
@@ -377,29 +396,50 @@ export default function ImagesPage() {
               </button>
             ))}
             {data && categoryOptions.length === 0 && (
-              <span className="text-xs text-gray-400">暂无分类，上传时会在你的目录下自动创建</span>
+              <span className="text-xs text-gray-400">暂无分类，可创建目录时指定分类名</span>
             )}
           </CardContent>
         </Card>
 
-        <div
-          onDragOver={(event) => {
-            event.preventDefault();
-            setDragging(true);
-          }}
-          onDragLeave={() => setDragging(false)}
-          onDrop={onDrop}
-          onClick={() => inputRef.current?.click()}
-          className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${
-            dragging ? 'border-blue-500 bg-blue-50' : 'border-gray-300 bg-white hover:border-blue-400'
-          }`}
-        >
-          <Upload className="w-6 h-6 text-blue-500 mx-auto mb-2" />
-          <p className="text-sm text-gray-700">拖拽图片到此处，或点击选择文件</p>
-          <p className="text-xs text-gray-500 mt-1">
-            支持 png / jpg / jpeg / webp / gif / bmp / tif / heic，单张最大 200MB
-          </p>
-        </div>
+        {!loading && data && !data.dirExists ? (
+          <Card>
+            <CardContent className="p-8 text-center">
+              <FolderPlus className="w-9 h-9 text-blue-500 mx-auto mb-3" />
+              <p className="text-sm font-medium text-gray-800">
+                {category ? `分类目录「${category}」还不存在` : '你还没有 NAS 个人目录'}
+              </p>
+              <p className="text-xs text-gray-500 mt-1 break-all">{data.dirPath}</p>
+              <Button className="mt-4" onClick={createDir} disabled={creating}>
+                {creating ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <FolderPlus className="w-4 h-4 mr-2" />
+                )}
+                {category ? '创建该分类目录' : '创建根目录'}
+              </Button>
+              <p className="text-xs text-gray-400 mt-3">目录不会自动创建，创建后即可上传图片</p>
+            </CardContent>
+          </Card>
+        ) : (
+          <div
+            onDragOver={(event) => {
+              event.preventDefault();
+              setDragging(true);
+            }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={onDrop}
+            onClick={() => inputRef.current?.click()}
+            className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${
+              dragging ? 'border-blue-500 bg-blue-50' : 'border-gray-300 bg-white hover:border-blue-400'
+            }`}
+          >
+            <Upload className="w-6 h-6 text-blue-500 mx-auto mb-2" />
+            <p className="text-sm text-gray-700">拖拽图片到此处，或点击选择文件</p>
+            <p className="text-xs text-gray-500 mt-1">
+              支持 png / jpg / jpeg / webp / gif / bmp / tif / heic，单张最大 200MB
+            </p>
+          </div>
+        )}
 
         {(activeTasks.length > 0 || finishedTasks.length > 0) && (
           <Card>
@@ -479,7 +519,11 @@ export default function ImagesPage() {
             ) : (data?.files.length ?? 0) === 0 ? (
               <div className="py-16 text-center text-gray-400">
                 <ImageIcon className="w-10 h-10 mx-auto mb-2 text-gray-300" />
-                <p className="text-sm">当前目录还没有图片，拖拽上传即可</p>
+                <p className="text-sm">
+                  {data?.dirExists === false
+                    ? '目录还不存在，请先在上方创建目录'
+                    : '当前目录还没有图片，拖拽上传即可'}
+                </p>
               </div>
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">

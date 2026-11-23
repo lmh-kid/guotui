@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { Readable } from 'node:stream';
-import { getCurrentUser } from '@/lib/auth-utils';
-import { SynologyError, buildUserDir, isImageFile, openImage } from '@/lib/synology';
+import { checkIsAdmin, getCurrentUser } from '@/lib/auth-utils';
+import { SynologyError, isImageFile, openImage, resolveUserDir } from '@/lib/synology';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -22,7 +22,8 @@ export async function GET(request: Request) {
   const remotePath = searchParams.get('path') || '';
   const wantThumb = searchParams.get('thumb') !== '0';
 
-  const userDir = buildUserDir(user.account);
+  const isAdmin = await checkIsAdmin(user.id);
+  const userDir = resolveUserDir(user.account, isAdmin);
   if (!remotePath.startsWith(`${userDir}/`) || remotePath.includes('..')) {
     return NextResponse.json({ error: '无权访问该文件' }, { status: 403 });
   }
