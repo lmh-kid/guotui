@@ -395,9 +395,6 @@ export default function ImagesPage() {
                 {item}
               </button>
             ))}
-            {data && categoryOptions.length === 0 && (
-              <span className="text-xs text-gray-400">暂无分类，可创建目录时指定分类名</span>
-            )}
           </CardContent>
         </Card>
 
@@ -508,7 +505,6 @@ export default function ImagesPage() {
                   {data?.total ?? 0}
                 </Badge>
               </div>
-              <span className="text-xs text-gray-400">数据实时读取 NAS，不做本地缓存</span>
             </div>
 
             {loading ? (
