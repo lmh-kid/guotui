@@ -27,7 +27,9 @@ import {
   AlertTriangle,
   CheckCircle2,
   ExternalLink,
+  Search,
 } from 'lucide-react';
+import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
 
 interface NasFile {
@@ -94,6 +96,7 @@ export default function ImagesPage() {
   const [dragging, setDragging] = useState(false);
   const [creating, setCreating] = useState(false);
   const [sessionToken, setSessionToken] = useState('');
+  const [keyword, setKeyword] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(
@@ -330,6 +333,13 @@ export default function ImagesPage() {
   const activeTasks = tasks.filter((task) => task.status === 'uploading' || task.status === 'pending');
   const finishedTasks = tasks.filter((task) => task.status !== 'uploading' && task.status !== 'pending');
 
+  const keywordTrimmed = keyword.trim().toLowerCase();
+  const filteredFiles = useMemo(() => {
+    const files = data?.files ?? [];
+    if (!keywordTrimmed) return files;
+    return files.filter((file) => file.name.toLowerCase().includes(keywordTrimmed));
+  }, [data?.files, keywordTrimmed]);
+
   return (
     <AppLayout>
       <div className="p-4 lg:p-6 space-y-4">
@@ -498,12 +508,31 @@ export default function ImagesPage() {
 
         <Card>
           <CardContent className="p-4">
-            <div className="flex items-center justify-between mb-3">
-              <div className="text-sm font-medium text-gray-800">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:justify-between mb-3">
+              <div className="text-sm font-medium text-gray-800 flex items-center">
                 {category ? `${category} 目录` : '根目录'}图片
                 <Badge variant="secondary" className="ml-2">
-                  {data?.total ?? 0}
+                  {keywordTrimmed ? `${filteredFiles.length} / ${data?.total ?? 0}` : (data?.total ?? 0)}
                 </Badge>
+              </div>
+              <div className="relative w-full sm:w-64">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                <Input
+                  value={keyword}
+                  onChange={(e) => setKeyword(e.target.value)}
+                  placeholder="搜索图片名称"
+                  className="pl-8 pr-8 h-9"
+                />
+                {keyword ? (
+                  <button
+                    type="button"
+                    onClick={() => setKeyword('')}
+                    aria-label="清空搜索"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                ) : null}
               </div>
             </div>
 
@@ -512,18 +541,20 @@ export default function ImagesPage() {
                 <Loader2 className="w-6 h-6 animate-spin text-blue-600 mb-2" />
                 <span className="text-sm">正在读取 NAS 目录...</span>
               </div>
-            ) : (data?.files.length ?? 0) === 0 ? (
+            ) : filteredFiles.length === 0 ? (
               <div className="py-16 text-center text-gray-400">
                 <ImageIcon className="w-10 h-10 mx-auto mb-2 text-gray-300" />
                 <p className="text-sm">
-                  {data?.dirExists === false
-                    ? '目录还不存在，请先在上方创建目录'
-                    : '当前目录还没有图片，拖拽上传即可'}
+                  {keywordTrimmed
+                    ? `没有匹配「${keyword.trim()}」的图片`
+                    : data?.dirExists === false
+                      ? '目录还不存在，请先在上方创建目录'
+                      : '当前目录还没有图片，拖拽上传即可'}
                 </p>
               </div>
             ) : (
               <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,112px)]">
-                {data?.files.map((file) => (
+                {filteredFiles.map((file) => (
                   <button
                     key={file.path}
                     type="button"
