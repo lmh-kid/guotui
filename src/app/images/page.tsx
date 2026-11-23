@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import Image from 'next/image';
 import AppLayout from '@/components/app-layout';
 import { apiRequest } from '@/lib/api-request';
 import { SESSION_TOKEN_KEY } from '@/lib/auth-provider';
@@ -535,15 +534,13 @@ export default function ImagesPage() {
                     onClick={() => setPreview(file)}
                     className="group text-left border border-gray-200 rounded-lg overflow-hidden bg-white hover:border-blue-400 hover:shadow-sm transition-colors"
                   >
-                    <div className="relative aspect-square bg-gray-50">
-                      <Image
+                    <div className="relative h-28 bg-gray-50">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
                         src={previewUrl(file, true)}
                         alt={file.name}
-                        fill
-                        unoptimized
-                        sizes="(max-width: 640px) 50vw, 200px"
-                        className="object-contain"
                         loading="lazy"
+                        className="absolute inset-0 w-full h-full object-contain p-1"
                       />
                     </div>
                     <div className="px-2 py-1.5 border-t border-gray-100">
@@ -605,14 +602,12 @@ export default function ImagesPage() {
             </DialogDescription>
           </DialogHeader>
           {preview && (
-            <div className="relative w-full h-[60vh] bg-gray-50 rounded-md">
-              <Image
+            <div className="relative w-full h-[55vh] bg-gray-50 rounded-md">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
                 src={previewUrl(preview, false)}
                 alt={preview.name}
-                fill
-                unoptimized
-                sizes="90vw"
-                className="object-contain"
+                className="absolute inset-0 w-full h-full object-contain"
               />
             </div>
           )}
