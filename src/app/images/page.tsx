@@ -526,15 +526,15 @@ export default function ImagesPage() {
                 </p>
               </div>
             ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
+              <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,112px)]">
                 {data?.files.map((file) => (
                   <button
                     key={file.path}
                     type="button"
                     onClick={() => setPreview(file)}
-                    className="group text-left border border-gray-200 rounded-lg overflow-hidden bg-white hover:border-blue-400 hover:shadow-sm transition-colors"
+                    className="group w-28 text-left border border-gray-200 rounded-lg overflow-hidden bg-white hover:border-blue-400 hover:shadow-sm transition-colors"
                   >
-                    <div className="relative h-28 bg-gray-50">
+                    <div className="relative w-28 h-28 bg-gray-50">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={previewUrl(file, true)}
