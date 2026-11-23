@@ -90,6 +90,7 @@
 | `fangguo_transactions` | 方果资金流水镜像（日结材运费依据） | id(PK=方果流水id), user_id(店铺名映射), tid, kind(charge/refund/prehold/exclude/unknown), processed_amount, settle_date, settled；upsert 幂等 |
 | `shops` | 用户店铺（方果店铺分配） | user_id, platform, shop_name, fangguo_shop_id, platform_code, brand_name, status |
 | `system_configs` | 系统配置（无RLS，仅service role） | key(fangguo_api_key), value |
+| `user_images` | 图片名称映射（图片本体在群晖 NAS，**不缓存图片**） | user_id, account, file_name, category, remote_dir, remote_path(UNIQUE), size, mime |
 
 **已删除表**：`orders`、`products`（历史遗留表，订单实时透传架构下无引用；其对 shops 的外键曾导致店铺取消分配与删除用户失败，已于数据库中 DROP）
 
@@ -200,6 +201,11 @@
 | GET | /api/admin/fangguo/shops | 方果店铺列表（含分配状态） | 管理员 |
 | POST | /api/admin/fangguo/assign | 店铺分配/取消分配 | 管理员 |
 | GET | /api/supabase-config | 获取 Supabase 配置 | 否 |
+| GET | /api/images | 图片列表（实时读群晖；参数 category；返回 dirExists/categories/files） | 是 |
+| POST | /api/images/mkdir | 创建用户 NAS 目录（body: {category?}） | 是 |
+| GET | /api/images/check | 批量查重名（参数 category/names） | 是 |
+| POST | /api/images/upload | 上传图片（body=原始二进制，参数 category/name/overwrite） | 是 |
+| GET | /api/images/preview | 图片预览代理（参数 path/thumb，仅本人目录） | 是 |
 
 ### /api/orders 响应格式
 ```json
@@ -249,3 +255,16 @@ order_no（=tid，前端行主键）、sys_tid、platform、platform_desc、orde
 5. **分页格式**：列表接口统一返回 `{ list, total, page, pageSize, ...extra }` 格式
 6. **订单无持久化**：任何订单相关逻辑（状态/筛选/统计）均基于方果 API 实时数据 + 内存计算，重启即失效（缓存仅 60 秒）
 7. **测试副作用**：验证过程中产生过小额充值/调账流水属正常测试数据（seller001@example.com 为历史演示账号，店铺已转给 test，密码未知）
+
+## 图片管理模块（群晖 NAS 直传）
+
+**架构**：`/images` 页面 → Next.js API（服务端持群晖凭据）→ 群晖 File Station API（`https://15.nat0.cn:23233/webapi/entry.cgi`）。图片本体只存 NAS，**服务端不落盘、不缓存**；`user_images` 仅记录名称映射。
+
+- **凭据**：`src/lib/synology.ts` 内常量（子账号 九因科技，非管理员账号），**不可下发前端**
+- **接口版本**：`SYNO.API.Auth` 用 **v3 + session=FileStation**（拿到的 SID 才能调 FileStation；v7 的 SID 调 FileStation 返回 401，仅作兜底）；`SYNO.FileStation.List` v2；`SYNO.FileStation.Upload` v2（multipart：path/create_parents/overwrite/file）；`SYNO.FileStation.CreateFolder` v2；预览用 `SYNO.FileStation.Thumb`，失败回退 `Download`
+- **SID 缓存**：globalThis 缓存 20 分钟，错误码 119/106/107/**401** 自动重登重试一次
+- **目录规则**：管理员根目录 = 给定的 `/数码印花图片/28-九因科技`；普通用户 = `/数码印花图片/28-九因科技/{账号}`；分类 = 再下一层 `{分类}`（`resolveUserDir`）
+- **目录不自动创建**：列表接口返回 `dirExists`，前端展示「创建根目录」按钮调 `/api/images/mkdir`
+- **判重**：上传前 `/api/images/check` 批量查同名（群晖 `overwrite=false` 会静默 `blSkip`，必须前置查）；重名弹窗三选一（跳过/改名/覆盖）
+- **限制**：单张 200MB（`MAX_UPLOAD_BYTES`）、后端并发 3（`UPLOAD_CONCURRENCY` 信号量）；≤32MB 走内存直发，更大走流式 + 字节数校验
+- **权限**：所有登录用户可用；不提供删除功能（NAS 子账号权限受限）
