@@ -158,7 +158,9 @@ export default function FangguoLinesTab() {
                 <th className="text-right">材料费</th>
                 <th className="text-right">运费</th>
                 <th className="text-right">手动扣费</th>
-                <th className="text-right">材料退回</th>
+                <th className="text-right" title="取消/改价重推时原预扣全额退回的金额，材料费列已是扣减后的净额，合计不重复计算">
+                  材料退回
+                </th>
                 <th className="text-right">运费退回</th>
                 <th className="text-right">合计</th>
               </tr>
@@ -207,6 +209,10 @@ export default function FangguoLinesTab() {
         </p>
         <p className="mt-1 text-xs text-gray-400">
           计费时间取推单时刻（与方果后台一致），整行费用归属推送日账期：昨日推送、今日发货的单显示在昨日，不重复出现在今日列表
+        </p>
+        <p className="mt-1 text-xs text-gray-400">
+          「材料退回」为取消/改价重推时原预扣的全额退回流水（如工厂改价 20→16.5：原扣 20 退回、按 16.5 重扣），
+          「材料费」列已是扣除退回后的净额（16.50），两者不叠加
         </p>
       </CardContent>
     </Card>
