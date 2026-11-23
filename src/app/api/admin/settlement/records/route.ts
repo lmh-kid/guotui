@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAdminRequest } from '@/lib/auth-utils';
 import { getSupabaseAdminClient } from '@/storage/database/supabase-client';
 import { PUSH_FEE } from '@/lib/billing';
-import { shanghaiDateStr, getSettlementStartDate } from '@/lib/daily-settlement';
+import { shanghaiDateStr, getSettlementStartDate, buildUserLedger } from '@/lib/daily-settlement';
 
 /**
  * 日结账单查询（管理员）
@@ -66,22 +66,21 @@ export async function GET(req: NextRequest) {
       : { data: [] };
     const accountMap = new Map((users ?? []).map((u) => [u.user_id, u.account]));
 
-    // 4. 聚合 (user, date)
-    //    材运费口径：预扣即扣款——材料费按订单 tid 聚合，取「预扣总额 vs 实扣总额」
-    //    绝对值较大者（两阶段同一笔钱，避免双计/漏计）；退费无条件冲抵
-    //    推单数口径：当天全部推送订单，含方果直推
+    // 4. 聚合 (user, date) —— 与资金明细、日结扣款同源（buildUserLedger 账本）
+    //    归属日 = 订单推送日：材料 max(预扣, 实扣) − 材料退费 + 运费实扣 − 运费退费
+    //    + 0.5 服务费，全部记入推送日账期（每日合计 = 该日资金明细合计 = 日结扣款）
     const groups = new Map<
       string,
       {
         user_id: string;
         account: string;
         date: string;
-        pushedTids: Set<string>;
-        matByTid: Map<string, { prehold: number; charge: number }>;
-        freight: number; // 运费等非材料实扣（负）
-        refund: number; // 退费（正，无条件冲抵）
-        allSettled: boolean;
+        pushCount: number;
+        materialGross: number;
+        freightGross: number;
+        refund: number;
         lineCount: number;
+        pending: boolean;
       }
     >();
     const getGroup = (userId: string, date: string) => {
@@ -92,115 +91,87 @@ export async function GET(req: NextRequest) {
           user_id: userId,
           account: accountMap.get(userId) ?? userId.slice(0, 8),
           date,
-          pushedTids: new Set(),
-          matByTid: new Map(),
-          freight: 0,
+          pushCount: 0,
+          materialGross: 0,
+          freightGross: 0,
           refund: 0,
-          allSettled: true,
           lineCount: 0,
+          pending: false,
         };
         groups.set(key, g);
       }
       return g;
     };
 
-    for (const l of lines ?? []) {
-      if (!l.user_id) continue; // 未归属流水单独统计
-      const g = getGroup(l.user_id, l.settle_date);
-      const amount = parseFloat(l.processed_amount as string);
-      const abs = Math.abs(amount);
-      const name = String(l.fee_name_type ?? '');
-      const tid = l.tid ? String(l.tid) : '';
+    // 4.1 未结算数据（判断账期是否结清）
+    const { data: unsettledLines } = userIds.size
+      ? await supabase
+          .from('fangguo_transactions')
+          .select('user_id, tid')
+          .eq('settled', false)
+          .in('user_id', Array.from(userIds))
+          .limit(5000)
+      : { data: [] as Array<{ user_id: string | null; tid: string | null }> };
+    const unsettledTids = new Map<string, Set<string>>();
+    for (const l of unsettledLines ?? []) {
+      if (!l.user_id || !l.tid) continue;
+      const set = unsettledTids.get(l.user_id) ?? new Set<string>();
+      set.add(String(l.tid));
+      unsettledTids.set(l.user_id, set);
+    }
 
-      if (l.kind === 'prehold') {
-        // 「扣费·订单推送」预扣 = 当天推送动作 + 材料费真实扣款
-        if (tid) {
-          g.pushedTids.add(tid);
-          if (amount < 0 && name.includes('材料')) {
-            const a = g.matByTid.get(tid) ?? { prehold: 0, charge: 0 };
-            a.prehold += abs;
-            g.matByTid.set(tid, a);
-          }
-        }
-        if (!l.settled) g.allSettled = false;
+    // 4.2 逐用户构建账本并按归属日聚合
+    const ledgerKeys = new Set<string>();
+    for (const userId of userIds) {
+      let ledger;
+      try {
+        ledger = await buildUserLedger(userId, startDate);
+      } catch {
         continue;
       }
-      if (l.kind === 'charge' && amount < 0) {
+      const un = unsettledTids.get(userId);
+      for (const row of ledger) {
+        ledgerKeys.add(`${userId}|${row.date}|${row.order_no}`);
+        if (row.date < effectiveSince) continue;
+        const g = getGroup(userId, row.date);
+        g.materialGross += row.materialGross;
+        g.freightGross += row.freightGross;
+        g.refund += row.materialRefund + row.freightRefund;
         g.lineCount += 1;
-        if (tid && name.includes('材料')) {
-          const a = g.matByTid.get(tid) ?? { prehold: 0, charge: 0 };
-          a.charge += abs;
-          g.matByTid.set(tid, a);
-        } else {
-          g.freight -= abs;
-        }
-      } else if (l.kind === 'refund' && amount > 0) {
-        g.lineCount += 1;
-        g.refund += amount; // 无条件冲抵（预扣已入账，取消推送必须退回）
+        if (row.pushFee > 0) g.pushCount += 1;
+        if (un && un.has(row.order_no)) g.pending = true;
       }
-      if (!l.settled) g.allSettled = false;
     }
+    // 4.3 兜底：流水尚未同步的系统推单（push_records 有、账本无）
     for (const p of pushes ?? []) {
-      if (!p.order_no) continue;
+      if (!p.order_no || !p.user_id) continue;
       const g = getGroup(p.user_id, p.push_date);
-      // 兜底：当天流水尚未同步时，系统推单记录仍计入（直推单靠流水，Set 去重合并）
-      g.pushedTids.add(p.order_no);
-      if (!p.fee_applied) g.allSettled = false;
-    }
-
-    // 4.5 材料费跨账期去重（与日结 settleUserDay 口径一致）
-    //     预扣在推送日账期、实扣在发货日账期时，材料费已在推送日账期按 max 入账，
-    //     本账期只补差额；推送日早于结算起始日的订单在本账期收全额（否则永远收不到）
-    const allChargeTids = new Set<string>();
-    for (const g of groups.values()) {
-      for (const [tid, a] of g.matByTid) if (a.charge > 0) allChargeTids.add(tid);
-    }
-    const priorPrehold = new Map<string, Array<{ date: string; amt: number }>>();
-    if (allChargeTids.size > 0 && startDate) {
-      const tidList = Array.from(allChargeTids);
-      for (let i = 0; i < tidList.length; i += 50) {
-        const { data: preLines } = await supabase
-          .from('fangguo_transactions')
-          .select('tid, settle_date, processed_amount')
-          .eq('kind', 'prehold')
-          .in('tid', tidList.slice(i, i + 50))
-          .gte('settle_date', startDate);
-        for (const l of preLines ?? []) {
-          const tid = String(l.tid ?? '');
-          const d = String(l.settle_date ?? '').slice(0, 10);
-          if (!tid || !d) continue;
-          const arr = priorPrehold.get(tid) ?? [];
-          arr.push({ date: d, amt: Math.abs(parseFloat(l.processed_amount as string)) });
-          priorPrehold.set(tid, arr);
-        }
+      if (ledgerKeys.has(`${p.user_id}|${p.push_date}|${p.order_no}`)) {
+        if (!p.fee_applied) g.pending = true;
+        continue;
       }
+      g.pushCount += 1;
+      g.lineCount += 1;
+      if (!p.fee_applied) g.pending = true;
     }
 
     const list = [...groups.values()]
       .map((g) => {
-        const pushCount = g.pushedTids.size;
-        const pushFee = parseFloat((pushCount * PUSH_FEE).toFixed(2));
-        let matSum = 0; // 材料费（负）：每单取 max(预扣, 实扣) − 更早账期已入账部分
-        for (const [tid, a] of g.matByTid) {
-          const full = Math.max(a.prehold, a.charge);
-          let prior = 0;
-          for (const p of priorPrehold.get(tid) ?? []) if (p.date < g.date) prior += p.amt;
-          matSum -= Math.max(0, full - prior);
-        }
-        const chargeTotal = parseFloat((matSum + g.freight).toFixed(2)); // 入账扣费（含预扣，负）
+        const pushFee = parseFloat((g.pushCount * PUSH_FEE).toFixed(2));
+        const chargeTotal = parseFloat((-(g.materialGross + g.freightGross)).toFixed(2));
         const refundTotal = parseFloat(g.refund.toFixed(2));
         const materialFreight = parseFloat((chargeTotal + refundTotal).toFixed(2));
         return {
           user_id: g.user_id,
           account: g.account,
           date: g.date,
-          push_count: pushCount,
+          push_count: g.pushCount,
           push_fee: pushFee,
           charge: chargeTotal,
           refund: refundTotal,
           material_freight: materialFreight,
           total: parseFloat((materialFreight - pushFee).toFixed(2)),
-          allSettled: g.allSettled,
+          allSettled: !g.pending,
           lineCount: g.lineCount,
         };
       })
