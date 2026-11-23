@@ -351,8 +351,6 @@ export default function ImagesPage() {
             </h1>
             <p className="text-xs text-gray-500 mt-1">
               NAS 目录：{data?.dirPath ?? '加载中...'}
-              <span className="mx-2 text-gray-300">|</span>
-              单张上限 200MB，同时上传 3 张，图片直接存入 NAS，系统只记录名称映射、不缓存图片
             </p>
           </div>
           <div className="flex items-center gap-2">
