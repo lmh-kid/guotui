@@ -1,0 +1,17 @@
+.git
+.gitignore
+.github
+node_modules
+.next
+dist
+coverage
+logs
+*.log
+assets
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+README.md
+AGENTS.md
+DESIGN.md

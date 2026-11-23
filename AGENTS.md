@@ -268,3 +268,13 @@ order_no（=tid，前端行主键）、sys_tid、platform、platform_desc、orde
 - **判重**：上传前 `/api/images/check` 批量查同名（群晖 `overwrite=false` 会静默 `blSkip`，必须前置查）；重名弹窗三选一（跳过/改名/覆盖）
 - **限制**：单张 200MB（`MAX_UPLOAD_BYTES`）、后端并发 3（`UPLOAD_CONCURRENCY` 信号量）；≤32MB 走内存直发，更大走流式 + 字节数校验
 - **权限**：所有登录用户可用；不提供删除功能（NAS 子账号权限受限）
+
+## 部署（Docker + 阿里云镜像仓库）
+
+产物形态：Next.js SSR + 自定义 server（`dist/server.js` 内含 node-cron 日结任务），**不是静态站**，镜像必须内置 Node 运行时。
+
+- `Dockerfile`：多阶段（builder：pnpm install → `next build --webpack` → `tsup` 打包 server；runner：pnpm 只装生产依赖 + 复制 `.next/dist/public`），`CMD node dist/server.js`，监听 5000
+- `assets/deploy.ps1`：本地 push → 构建机拉指定 commit 并 `docker build` → `push-image.sh` 推仓库 → 目标机 `pull-image.sh` → 重建容器 → 健康检查（`/api/auth/me` 期望 401）失败自动回滚上一镜像
+- 运行时必需环境变量（写入目标机 `/root/release/guotui/.env.production`）：`COZE_SUPABASE_URL`、`COZE_SUPABASE_ANON_KEY`、`COZE_SUPABASE_SERVICE_ROLE_KEY`、`COZE_PROJECT_DOMAIN_DEFAULT`、`COZE_PROJECT_ENV=PROD`、`PORT`、`TZ=Asia/Shanghai`
+- 容器参数：`--restart unless-stopped --log-driver json-file --log-opt max-size=10m --log-opt max-file=3`（日志量小，靠 docker 轮转即可，无需应用层清理）
+- **只能单实例**：日结定时任务在进程内，多副本会重复结算
