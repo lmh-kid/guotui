@@ -3,6 +3,7 @@ import { Readable } from 'node:stream';
 import { getCurrentUser } from '@/lib/auth-utils';
 import { getSupabaseAdminClient } from '@/storage/database/supabase-client';
 import {
+  IN_MEMORY_UPLOAD_LIMIT,
   MAX_UPLOAD_BYTES,
   SynologyError,
   buildUserDir,
@@ -44,20 +45,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: '仅支持上传图片文件（png/jpg/jpeg/webp/gif/bmp/tif/heic）' }, { status: 415 });
   }
 
-  const contentLength = Number(request.headers.get('content-length') || 0);
-  if (!Number.isFinite(contentLength) || contentLength <= 0) {
-    return NextResponse.json({ error: '缺少文件大小信息' }, { status: 411 });
-  }
-  if (contentLength > MAX_UPLOAD_BYTES) {
-    return NextResponse.json(
-      { error: `单张图片不能超过 ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB` },
-      { status: 413 },
-    );
-  }
-  if (!request.body) {
-    return NextResponse.json({ error: '未接收到文件内容' }, { status: 400 });
-  }
-
   const dirPath = buildUserDir(user.account, category);
 
   try {
@@ -77,17 +64,48 @@ export async function POST(request: Request) {
       }
     }
 
-    const stream = Readable.fromWeb(
-      request.body as unknown as import('node:stream/web').ReadableStream<Uint8Array>,
-    );
+    const contentLength = Number(request.headers.get('content-length') || 0);
+    const headerSize = Number.isFinite(contentLength) && contentLength > 0 ? contentLength : 0;
+    if (headerSize > MAX_UPLOAD_BYTES) {
+      return NextResponse.json(
+        { error: `单张图片不能超过 ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB` },
+        { status: 413 },
+      );
+    }
+
+    // 小文件整体读入内存再发送（最稳），大文件流式转发（不落盘、不缓存）
+    let buffer: Buffer | undefined;
+    let stream: Readable | undefined;
+    if (headerSize === 0 || headerSize <= IN_MEMORY_UPLOAD_LIMIT) {
+      buffer = Buffer.from(await request.arrayBuffer());
+      if (buffer.length === 0) {
+        return NextResponse.json({ error: '未接收到文件内容' }, { status: 400 });
+      }
+      if (buffer.length > MAX_UPLOAD_BYTES) {
+        return NextResponse.json(
+          { error: `单张图片不能超过 ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB` },
+          { status: 413 },
+        );
+      }
+    } else {
+      if (!request.body) {
+        return NextResponse.json({ error: '未接收到文件内容' }, { status: 400 });
+      }
+      stream = Readable.fromWeb(
+        request.body as unknown as import('node:stream/web').ReadableStream<Uint8Array>,
+      );
+    }
+
+    const size = buffer ? buffer.length : headerSize;
 
     const result = await uploadImage({
       dirPath,
       fileName,
-      size: contentLength,
+      size,
       mime: request.headers.get('content-type') || undefined,
-      stream,
       overwrite,
+      buffer,
+      stream,
     });
 
     if (result.skipped) {
@@ -107,7 +125,7 @@ export async function POST(request: Request) {
         category,
         remote_dir: dirPath,
         remote_path: remotePath,
-        size: String(contentLength),
+        size: String(size),
         mime: request.headers.get('content-type') || null,
         updated_at: new Date().toISOString(),
       },
@@ -124,7 +142,7 @@ export async function POST(request: Request) {
       fileName,
       category,
       remotePath,
-      size: contentLength,
+      size,
     });
   } catch (err) {
     const message = err instanceof SynologyError ? err.message : '图片上传失败，请重试';

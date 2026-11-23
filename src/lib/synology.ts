@@ -1,6 +1,6 @@
 import https from 'node:https';
 import type { IncomingMessage } from 'node:http';
-import { Readable } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import { randomBytes } from 'node:crypto';
 
 /**
@@ -139,25 +139,44 @@ function authState(): AuthState {
   return g.__synoAuth;
 }
 
+async function loginAttempt(version: string): Promise<string | null> {
+  const query = new URLSearchParams({
+    api: 'SYNO.API.Auth',
+    version,
+    method: 'login',
+    account: SYNOLOGY_ACCOUNT,
+    passwd: SYNOLOGY_PASSWORD,
+    session: 'FileStation',
+    format: 'sid',
+  });
+  const res = await request(`${ENTRY_URL}?${query.toString()}`, { method: 'GET', idleTimeout: 20_000 });
+  const json = await readJson<{ sid?: string }>(res);
+  const sid = json.data?.sid;
+  if (!json.success || !sid) {
+    console.error('[synology] 登录失败', { version, code: json.error?.code });
+    return null;
+  }
+  return sid;
+}
+
 async function login(): Promise<string> {
   const state = authState();
   if (state.pending) return state.pending;
 
   state.pending = (async () => {
-    const query = new URLSearchParams({
-      api: 'SYNO.API.Auth',
-      version: '3',
-      method: 'login',
-      account: SYNOLOGY_ACCOUNT,
-      passwd: SYNOLOGY_PASSWORD,
-      session: 'FileStation',
-      format: 'sid',
-    });
-    const res = await request(`${ENTRY_URL}?${query.toString()}`, { method: 'GET', idleTimeout: 20_000 });
-    const json = await readJson<{ sid?: string }>(res);
-    const sid = json.data?.sid;
-    if (!json.success || !sid) {
-      throw new SynologyError(`群晖登录失败（错误码 ${json.error?.code ?? '未知'}），请检查 NAS 账号密码或网络`);
+    // 该 NAS 的 SYNO.API.Auth 最高支持 v7，优先用高版本，失败时回退 v3
+    let sid: string | null = null;
+    for (const version of ['7', '3']) {
+      try {
+        sid = await loginAttempt(version);
+      } catch (err) {
+        console.error('[synology] 登录异常', err);
+        sid = null;
+      }
+      if (sid) break;
+    }
+    if (!sid) {
+      throw new SynologyError('群晖登录失败，请检查 NAS 账号密码或网络连通性');
     }
     state.sid = sid;
     // SID 默认有效期较短，保守按 20 分钟复用；过期后自动重登
@@ -370,10 +389,12 @@ export interface UploadImageOptions {
   mime?: string;
   /** 文件字节数，用于拼装 Content-Length */
   size: number;
-  /** 文件内容流 */
-  stream: Readable;
   /** 是否覆盖同名文件 */
   overwrite: boolean;
+  /** 已在内存中的完整内容（小文件优先走这条路径，最稳定） */
+  buffer?: Buffer;
+  /** 大文件流式转发（不落盘、不缓存） */
+  stream?: Readable;
 }
 
 export interface UploadImageResult {
@@ -381,10 +402,16 @@ export interface UploadImageResult {
   skipped: boolean;
 }
 
-/** 流式上传图片到 NAS（内存中只做 stream 转发，不写磁盘、不缓存） */
+/** 小于该体积直接整体缓冲发送，避免流式组装的不确定性 */
+export const IN_MEMORY_UPLOAD_LIMIT = 32 * 1024 * 1024;
+
+/** 上传图片到 NAS（不写磁盘、不缓存图片） */
 export async function uploadImage(options: UploadImageOptions): Promise<UploadImageResult> {
   if (options.size > MAX_UPLOAD_BYTES) {
     throw new SynologyError(`单张图片不能超过 ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB`);
+  }
+  if (!options.buffer && !options.stream) {
+    throw new SynologyError('缺少图片内容');
   }
 
   await acquireSlot();
@@ -424,25 +451,36 @@ function postMultipart(options: UploadImageOptions, sid: string): Promise<Upload
 
   const headBuf = Buffer.from(head, 'utf8');
   const tailBuf = Buffer.from(tail, 'utf8');
-  const contentLength = headBuf.length + options.size + tailBuf.length;
+  const fileSize = options.buffer ? options.buffer.length : options.size;
+  const contentLength = headBuf.length + fileSize + tailBuf.length;
 
-  const body = Readable.from(
-    (async function* () {
-      yield headBuf;
-      for await (const chunk of options.stream) {
-        yield chunk as Buffer;
-      }
-      yield tailBuf;
-    })(),
-  );
+  const url = `${ENTRY_URL}?${new URLSearchParams({
+    api: 'SYNO.FileStation.Upload',
+    version: '2',
+    method: 'upload',
+    _sid: sid,
+  }).toString()}`;
+
+  console.log('[synology] upload start', {
+    fileName: options.fileName,
+    dirPath: options.dirPath,
+    fileSize,
+    mode: options.buffer ? 'buffer' : 'stream',
+  });
 
   return new Promise<UploadImageResult>((resolve, reject) => {
-    const url = `${ENTRY_URL}?${new URLSearchParams({
-      api: 'SYNO.FileStation.Upload',
-      version: '2',
-      method: 'upload',
-      _sid: sid,
-    }).toString()}`;
+    let settled = false;
+    const done = (value: UploadImageResult) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const fail = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      console.error('[synology] upload failed', err.message);
+      reject(err);
+    };
 
     const req = https.request(
       url,
@@ -461,21 +499,48 @@ function postMultipart(options: UploadImageOptions, sid: string): Promise<Upload
             const json = await readJson<{ blSkip?: boolean; file?: string }>(res);
             if (!json.success) {
               const code = json.error?.code ?? -1;
-              reject(new SynologyError(`图片上传失败（群晖错误码 ${code}）`, code === 119));
+              console.error('[synology] upload rejected', { fileName: options.fileName, status: res.statusCode, code, json });
+              fail(new SynologyError(`图片上传失败（群晖错误码 ${code}）`, code === 119));
               return;
             }
-            resolve({ skipped: json.data?.blSkip === true });
+            done({ skipped: json.data?.blSkip === true });
           } catch (err) {
-            reject(err instanceof Error ? err : new SynologyError('图片上传失败'));
+            fail(err instanceof Error ? err : new SynologyError('图片上传失败'));
           }
         })();
       },
     );
 
-    req.on('timeout', () => req.destroy(new SynologyError('上传超时，请检查网络后重试')));
-    req.on('error', (err) => reject(err instanceof Error ? err : new SynologyError('图片上传失败')));
-    body.on('error', (err) => req.destroy(err instanceof Error ? err : new Error('读取上传数据失败')));
-    body.pipe(req);
+    req.on('timeout', () => req.destroy(new SynologyError('上传超时，请检查 NAS 网络后重试')));
+    req.on('error', (err) => fail(err instanceof Error ? err : new SynologyError('图片上传失败')));
+
+    if (options.buffer) {
+      req.write(headBuf);
+      req.write(options.buffer);
+      req.end(tailBuf);
+      return;
+    }
+
+    const source = options.stream as Readable;
+    const pass = new PassThrough();
+    let sent = 0;
+
+    source.on('data', (chunk: Buffer | string) => {
+      sent += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
+    });
+    source.on('error', (err) => pass.destroy(err));
+    source.on('end', () => {
+      if (sent !== options.size) {
+        pass.destroy(new SynologyError(`上传数据不完整（收到 ${sent} 字节，声明 ${options.size} 字节）`));
+        return;
+      }
+      pass.end(tailBuf);
+    });
+    pass.on('error', (err) => req.destroy(err instanceof Error ? err : new Error('读取上传数据失败')));
+
+    pass.write(headBuf);
+    source.pipe(pass, { end: false });
+    pass.pipe(req);
   });
 }
 
