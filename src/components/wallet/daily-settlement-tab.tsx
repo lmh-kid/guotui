@@ -147,7 +147,9 @@ export default function DailySettlementTab() {
                 <TableHead className="text-right">材运费</TableHead>
                 <TableHead className="text-right">当日合计</TableHead>
                 <TableHead>结算状态</TableHead>
-                <TableHead className="text-right">扣款后余额</TableHead>
+                <TableHead className="text-right" title="该账期最后一次扣款/回补后的余额快照">
+                  扣款后余额
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -176,7 +178,10 @@ export default function DailySettlementTab() {
                       <Badge className="bg-amber-100 text-amber-700 text-xs">待结算</Badge>
                     )}
                   </TableCell>
-                  <TableCell className="text-right text-sm text-gray-600">
+                  <TableCell
+                    className="text-right text-sm text-gray-600"
+                    title="该账期最后一笔扣款/回补后的账户余额快照（来自钱包流水 balance_after）。后续其他账期补扣、补退会继续改变账户余额，实时余额以页面顶部为准"
+                  >
                     {r.balance_after != null ? `¥${r.balance_after.toFixed(2)}` : '-'}
                   </TableCell>
                 </TableRow>
