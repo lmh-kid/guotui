@@ -213,6 +213,139 @@ export async function getSettlementStartDate(): Promise<string | null> {
   return (data?.value as string) || null;
 }
 
+/** 上海本地时间字符串 YYYY-MM-DD HH:mm:ss（与资金明细展示同口径） */
+export function shTimeLocal(t?: string | null): string {
+  if (!t) return "";
+  const d = new Date(t);
+  if (Number.isNaN(d.getTime())) return "";
+  const s = new Date(d.getTime() + 8 * 3600_000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${s.getUTCFullYear()}-${p(s.getUTCMonth() + 1)}-${p(s.getUTCDate())} ${p(s.getUTCHours())}:${p(s.getUTCMinutes())}:${p(s.getUTCSeconds())}`;
+}
+
+const round2 = (x: number) => Math.round(x * 100) / 100;
+
+/** 账本行（资金明细与日结共用同一套口径，保证「明细合计 = 当天扣款」） */
+export interface LedgerRow {
+  order_no: string;
+  date: string; // 归属日（推送日；无预扣时回退最近流水日）
+  time: string; // 展示时间：推送时刻（上海本地时间）
+  store_name: string | null;
+  materialGross: number; // max(预扣材料, 实扣材料)
+  materialRefund: number;
+  freightGross: number; // 运费等非材料实扣
+  freightRefund: number;
+  pushFee: number; // 0.5 或 0
+}
+
+/**
+ * 构建某用户的「订单账本」——资金明细展示与日结扣款共用，杜绝两侧口径漂移
+ *
+ * 归属规则：
+ * - 材料费 = max(预扣总额, 实扣总额)（同一笔钱的两个阶段，不双计），材料退费冲抵
+ * - 运费等非材料实扣与其退费跟随该订单，一并记入订单归属日
+ * - 归属日 = 该单最早一笔预扣（订单推送）的 settle_date；推送日早于结算起始日
+ *   或预扣缺失时回退到最近流水日
+ * - 服务费 0.5：仅推送日在结算窗口内的订单计 1 单（不跨日补收）
+ * - 结算起始日之前的订单不追账
+ */
+export async function buildUserLedger(
+  userId: string,
+  startDate: string | null
+): Promise<LedgerRow[]> {
+  const supabase = await getSupabaseAdminClient();
+  type Line = {
+    tid: string | null;
+    kind: string;
+    fee_name_type: string | null;
+    processed_amount: string | number;
+    settle_date: string | null;
+    transaction_time: string | null;
+    store_name: string | null;
+  };
+  const PAGE = 1000;
+  const lines: Line[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
+      .from("fangguo_transactions")
+      .select("tid, kind, fee_name_type, processed_amount, settle_date, transaction_time, store_name")
+      .eq("user_id", userId)
+      .order("transaction_time", { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(`读取流水失败: ${error.message}`);
+    const batch = (data ?? []) as Line[];
+    lines.push(...batch);
+    if (batch.length < PAGE) break;
+  }
+
+  interface Acc {
+    lastTime: string;
+    store: string | null;
+    preMat: number;
+    chargeMat: number;
+    refundMat: number;
+    freight: number;
+    refundFrt: number;
+    pushDate: string;
+    pushTime: string;
+  }
+  const accMap = new Map<string, Acc>();
+  for (const l of lines) {
+    const tid = l.tid ? String(l.tid) : "";
+    if (!tid) continue; // 充值等无订单流水不进账本
+    const abs = Math.abs(parseFloat(String(l.processed_amount)));
+    const isMat = String(l.fee_name_type ?? "").includes("材料");
+    const t = shTimeLocal(l.transaction_time);
+    const sd = String(l.settle_date ?? "").slice(0, 10);
+    let a = accMap.get(tid);
+    if (!a) {
+      a = {
+        lastTime: t, store: l.store_name ?? null,
+        preMat: 0, chargeMat: 0, refundMat: 0, freight: 0, refundFrt: 0,
+        pushDate: "", pushTime: "",
+      };
+      accMap.set(tid, a);
+    }
+    if (!a.store && l.store_name) a.store = l.store_name;
+    if (t && (!a.lastTime || t > a.lastTime)) a.lastTime = t;
+    if (l.kind === "prehold") {
+      if (isMat) a.preMat += abs;
+      if (sd && (!a.pushDate || sd < a.pushDate || (sd === a.pushDate && t && (!a.pushTime || t < a.pushTime)))) {
+        a.pushDate = sd;
+        a.pushTime = t;
+      }
+    } else if (l.kind === "charge") {
+      if (isMat) a.chargeMat += abs;
+      else a.freight += abs;
+    } else if (l.kind === "refund") {
+      if (isMat) a.refundMat += abs;
+      else a.refundFrt += abs;
+    }
+  }
+
+  const rows: LedgerRow[] = [];
+  for (const [tid, a] of accMap) {
+    const hasPre = !!a.pushDate;
+    const usePushDay = hasPre && (!startDate || a.pushDate >= startDate);
+    const date = usePushDay ? a.pushDate : a.lastTime.slice(0, 10);
+    if (!date) continue;
+    if (startDate && date < startDate) continue; // 结算起始日之前不追账
+    rows.push({
+      order_no: tid,
+      date,
+      time: usePushDay ? a.pushTime || a.lastTime : a.lastTime,
+      store_name: a.store,
+      materialGross: round2(Math.max(a.preMat, a.chargeMat)),
+      materialRefund: round2(a.refundMat),
+      freightGross: round2(a.freight),
+      freightRefund: round2(a.refundFrt),
+      pushFee: usePushDay || !hasPre ? PUSH_FEE : 0,
+    });
+  }
+  rows.sort((x, y) => (x.time < y.time ? 1 : x.time > y.time ? -1 : 0));
+  return rows;
+}
+
 interface DaySettleResult {
   user: string;
   date: string;
@@ -354,6 +487,7 @@ export async function settleDueDays(): Promise<{
     pushIds: string[];
   }>();
   const groupKey = (u: string, d: string) => `${u}|${d}`;
+  const errors: string[] = [];
 
   for (const line of lines ?? []) {
     const key = groupKey(line.user_id, line.settle_date);
@@ -374,19 +508,56 @@ export async function settleDueDays(): Promise<{
     g.pushIds.push(p.id);
   }
 
+  // 3.1 近 7 天窗口重算（含已结算账期）
+  // 结算口径 = 订单归属日（推送日）：跨日单（21 号推、22 号发货）的费用归推送日账期，
+  // 因此新流水可能落在「已结算」的其它日期上。每天把窗口内涉及的用户×归属日全部重算，
+  // 与已扣总额比对后补扣/补退——账目始终等于资金明细合计。
+  const windowStart = dateAddDays(today, -6);
+  const ledgers = new Map<string, LedgerRow[]>();
+  {
+    const { data: recent, error: recentErr } = await supabase
+      .from("fangguo_transactions")
+      .select("user_id")
+      .gte("settle_date", windowStart)
+      .not("user_id", "is", null)
+      .limit(5000);
+    if (recentErr) errors.push(`查询近 7 天流水失败: ${recentErr.message}`);
+    const recentUsers = new Set<string>();
+    for (const r of recent ?? []) {
+      if (r.user_id) recentUsers.add(r.user_id as string);
+    }
+    for (const uid of recentUsers) {
+      let ledger: LedgerRow[];
+      try {
+        ledger = await buildUserLedger(uid, startDate);
+      } catch (e) {
+        errors.push(`用户 ${uid} 账本构建失败: ${e instanceof Error ? e.message : e}`);
+        continue;
+      }
+      ledgers.set(uid, ledger);
+      for (const row of ledger) {
+        if (row.date < windowStart || row.date > settleCutoff) continue;
+        const key = groupKey(uid, row.date);
+        if (!groups.has(key)) {
+          groups.set(key, { user: uid, date: row.date, lineIds: [], pushIds: [] });
+        }
+      }
+    }
+  }
+
   if (groups.size === 0) {
-    return { settledUsers: 0, settledAmount: 0, skippedUsers: 0, errors: [] };
+    return { settledUsers: 0, settledAmount: 0, skippedUsers: 0, errors };
   }
 
   // 4. 逐组结算
   let settledUsers = 0;
   let settledAmount = 0;
   let skippedUsers = 0;
-  const errors: string[] = [];
 
   for (const g of groups.values()) {
     try {
-      const result = await withUserLock(g.user, () => settleUserDay(g, startDate));
+      const ledger = ledgers.get(g.user);
+      const result = await withUserLock(g.user, () => settleUserDay(g, startDate, ledger));
       if (result.skipped) {
         skippedUsers += 1;
       } else {
@@ -413,7 +584,8 @@ export async function settleDueDays(): Promise<{
  */
 async function settleUserDay(
   g: { user: string; date: string; lineIds: string[]; pushIds: string[] },
-  startDate: string | null
+  startDate: string | null,
+  ledgerIn?: LedgerRow[]
 ): Promise<{ amount: number; skipped: boolean }> {
   const supabase = await getSupabaseAdminClient();
 
@@ -440,93 +612,35 @@ async function settleUserDay(
     .like("description", `日结 ${g.date}%`);
   if (tErr) throw new Error(`读取日结流水失败: ${tErr.message}`);
 
-  // ---- 重算全量应付（负 = 用户应付）----
-  // 材料费口径（预扣即扣款）：方果推单时「扣费·订单推送」预扣（prehold）即从账户
-  // 真实扣钱，发货时「预扣转实扣」只是确认状态（实测 204/206 单条数金额 1:1 相等，
-  // 不二次扣款）。故按订单 tid 聚合，取「预扣总额」与「实扣总额」中绝对值较大者入账：
-  // - 未发货：计预扣（推单当天即扣，不再是敞口等发货）
-  // - 已转实扣：计实扣（与预扣相等时重算无差异；实扣调高时自动补差）
-  // - 仅有实扣（预扣流水在 7 天同步窗口外）：计实扣
-  let materialFreight = 0; // Σ入账扣费（负）：材料费按 tid 取 max + 运费等实扣
-  let refundTotal = 0; // Σ退费（正，无条件冲抵：预扣已入账，取消推送必须退回）
-  const matByTid = new Map<string, { prehold: number; charge: number }>();
-  for (const l of dayLines ?? []) {
-    const amount = parseFloat(l.processed_amount as string);
-    const abs = Math.abs(amount);
-    const name = String(l.fee_name_type ?? "");
-    const tid = l.tid ? String(l.tid) : "";
-    if (l.kind === "prehold" && amount < 0) {
-      // 材料费预扣（订单推送，实为真实扣款）
-      if (tid && name.includes("材料")) {
-        const a = matByTid.get(tid) ?? { prehold: 0, charge: 0 };
-        a.prehold += abs;
-        matByTid.set(tid, a);
-      }
-    } else if (l.kind === "charge" && amount < 0) {
-      if (tid && name.includes("材料")) {
-        const a = matByTid.get(tid) ?? { prehold: 0, charge: 0 };
-        a.charge += abs;
-        matByTid.set(tid, a);
-      } else {
-        materialFreight -= abs; // 运费等非材料实扣
-      }
-    } else if (l.kind === "refund" && amount > 0) {
-      refundTotal += amount; // 退费无条件冲抵（材料/运费退费统一回补）
+  // ---- 重算全量应付：统一走 buildUserLedger（与「资金明细」同源）----
+  // 归属口径 = 订单归属日（推送日）：
+  //   材料费 max(预扣, 实扣) − 材料退费 + 运费等实扣 − 运费退费 + 0.5 服务费
+  // 全部记入该订单的推送日账期。因此「某天扣款 ≡ 该天资金明细合计」，
+  // 跨日单（21 号推、22 号发货）的运费、退费一律回推送日，不另立账期。
+  const ledger = ledgerIn ?? (await buildUserLedger(g.user, startDate));
+  let due = 0; // 正数：用户应付
+  let pushCount = 0;
+  const ledgerTids = new Set<string>();
+  for (const row of ledger) {
+    if (row.date !== g.date) continue;
+    ledgerTids.add(row.order_no);
+    due += row.materialGross - row.materialRefund + row.freightGross - row.freightRefund;
+    if (row.pushFee > 0) {
+      due += row.pushFee;
+      pushCount += 1;
     }
   }
-  // 材料费跨账期去重：订单「推送日(prehold) → 发货日(charge)」跨账期时，材料费
-  // 已在推送日账期按 max(预扣,实扣) 入账；本账期只补差额（实扣 > 预扣时），否则 0。
-  // 推送日早于结算起始日（不追账）的订单，本账期收全额——否则该单材料费永远收不到。
-  const chargeTids = [...matByTid.entries()].filter(([, a]) => a.charge > 0).map(([t]) => t);
-  const priorPaidByTid = new Map<string, number>();
-  if (chargeTids.length > 0 && startDate) {
-    for (let i = 0; i < chargeTids.length; i += 50) {
-      const chunk = chargeTids.slice(i, i + 50);
-      const { data: preLines } = await supabase
-        .from("fangguo_transactions")
-        .select("tid, processed_amount")
-        .eq("user_id", g.user)
-        .eq("kind", "prehold")
-        .in("tid", chunk)
-        .lt("settle_date", g.date)
-        .gte("settle_date", startDate);
-      for (const l of preLines ?? []) {
-        const tid = String(l.tid ?? "");
-        if (!tid) continue;
-        priorPaidByTid.set(
-          tid,
-          (priorPaidByTid.get(tid) ?? 0) + Math.abs(parseFloat(l.processed_amount as string))
-        );
-      }
-    }
-  }
-  for (const [tid, a] of matByTid) {
-    // 预扣与实扣是同一笔钱的两个阶段：取绝对值较大者，避免双计 / 漏计
-    const full = Math.max(a.prehold, a.charge);
-    const prior = priorPaidByTid.get(tid) ?? 0;
-    materialFreight -= Math.max(0, full - prior);
-  }
-  // 结算起始日保护：早于起始日的账期不追溯材运费（服务费照常）
-  if (startDate && g.date < startDate) {
-    materialFreight = 0;
-    refundTotal = 0;
-  }
-  // 推单数口径：当天（上海自然日 0:00-23:59:59，=方果流水 settle_date 账期）全部
-  // 推送订单（含方果后台直推）——按方果「扣费·订单推送」预扣流水去重 tid 统计
-  // （推送必然产生预扣冻结）；当天流水尚未同步时由系统推单记录
-  // （push_records.order_no）兜底合并，重推/取消重推同一单去重算 1 单。
-  // 不跨日补收：订单推送日与发货日跨账期时，服务费只在推送日账期收取
-  const pushedTids = new Set<string>();
-  for (const l of dayLines ?? []) {
-    if (!l.tid) continue;
-    if (l.kind === "prehold") pushedTids.add(l.tid);
-  }
+  // 流水尚未同步时的系统推单兜底（push_records 有、流水还没有）
   for (const p of dayPushes ?? []) {
-    if (p.order_no) pushedTids.add(p.order_no);
+    if (p.order_no && !ledgerTids.has(p.order_no)) {
+      due += PUSH_FEE;
+      pushCount += 1;
+    }
   }
-  const pushCount = pushedTids.size;
-  const pushFee = parseFloat((pushCount * PUSH_FEE).toFixed(2)); // 正数（展示用）
-  const totalDue = parseFloat((materialFreight + refundTotal - pushFee).toFixed(2)); // 负 = 应付
+  const pushFee = round2(pushCount * PUSH_FEE); // 正数（展示用）
+  const materialFreight = -round2(due - pushFee); // 材运费（负，展示用）
+  const refundTotal = 0; // 退费已各自冲抵进材料/运费净额
+  const totalDue = -round2(due); // 负 = 应付
 
   // ---- 与已扣总额比对 ----
   const already = parseFloat(
@@ -607,30 +721,24 @@ async function settleUserDay(
   return { amount: delta, skipped: false };
 }
 
-/** 标记一组数据已结算 */
-async function markSettled(g: {
-  user: string; date: string; lineIds: string[]; pushIds: string[];
-}): Promise<void> {
+/** 标记一组数据已结算（谓词式：该用户该账期全部未结算记录） */
+async function markSettled(g: { user: string; date: string }): Promise<void> {
   const supabase = await getSupabaseAdminClient();
   const now = new Date().toISOString();
 
-  if (g.lineIds.length > 0) {
-    // 限定本用户本账期，防止误标其他日期数据
-    const { error: markErr } = await supabase
-      .from("fangguo_transactions")
-      .update({ settled: true, updated_at: now })
-      .eq("user_id", g.user)
-      .eq("settle_date", g.date)
-      .eq("settled", false);
-    if (markErr) throw new Error(`标记流水 settled 失败: ${markErr.message}`);
-  }
-  if (g.pushIds.length > 0) {
-    const { error: feeErr } = await supabase
-      .from("push_records")
-      .update({ fee_applied: true, settled_at: now })
-      .eq("user_id", g.user)
-      .eq("push_date", g.date)
-      .eq("fee_applied", false);
-    if (feeErr) throw new Error(`标记推单计费失败: ${feeErr.message}`);
-  }
+  const { error: markErr } = await supabase
+    .from("fangguo_transactions")
+    .update({ settled: true, updated_at: now })
+    .eq("user_id", g.user)
+    .eq("settle_date", g.date)
+    .eq("settled", false);
+  if (markErr) throw new Error(`标记流水 settled 失败: ${markErr.message}`);
+
+  const { error: feeErr } = await supabase
+    .from("push_records")
+    .update({ fee_applied: true, settled_at: now })
+    .eq("user_id", g.user)
+    .eq("push_date", g.date)
+    .eq("fee_applied", false);
+  if (feeErr) throw new Error(`标记推单计费失败: ${feeErr.message}`);
 }
