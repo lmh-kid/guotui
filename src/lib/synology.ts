@@ -164,9 +164,9 @@ async function login(): Promise<string> {
   if (state.pending) return state.pending;
 
   state.pending = (async () => {
-    // 该 NAS 的 SYNO.API.Auth 最高支持 v7，优先用高版本，失败时回退 v3
+    // 必须用 v3 + session=FileStation：该 NAS 上 v6/v7 换来的 SID 调 FileStation 接口会返回 401
     let sid: string | null = null;
-    for (const version of ['7', '3']) {
+    for (const version of ['3']) {
       try {
         sid = await loginAttempt(version);
       } catch (err) {
@@ -222,8 +222,8 @@ async function callApi<T>(
   const json = await readJson<T>(res);
   if (!json.success) {
     const code = json.error?.code ?? -1;
-    // 119 = SID 不存在/已过期；106/107 = 会话超时/重复登录
-    const relogin = code === 119 || code === 106 || code === 107;
+    // 119 = SID 不存在/已过期；106/107 = 会话超时/重复登录；401 = SID 无该接口权限（换错版本登录）
+    const relogin = code === 119 || code === 106 || code === 107 || code === 401;
     throw new SynologyError(`群晖接口 ${api}.${method} 调用失败（错误码 ${code}）`, relogin);
   }
   return json.data as T;

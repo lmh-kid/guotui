@@ -48,7 +48,6 @@ interface ImagesResponse {
   category: string;
   dirExists: boolean;
   categories: string[];
-  suggestedCategories: string[];
   files: NasFile[];
   total: number;
 }
@@ -133,10 +132,7 @@ export default function ImagesPage() {
   }, [category, load]);
 
   const categoryOptions = useMemo(() => {
-    const merged = new Set<string>();
-    for (const item of data?.categories ?? []) merged.add(item);
-    for (const item of data?.suggestedCategories ?? []) merged.add(item);
-    return Array.from(merged);
+    return Array.from(new Set(data?.categories ?? []));
   }, [data]);
 
   const queueRef = useRef<UploadTask[]>([]);

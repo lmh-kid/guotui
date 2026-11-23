@@ -2,7 +2,6 @@ import { NextResponse } from 'next/server';
 import { checkIsAdmin, getCurrentUser } from '@/lib/auth-utils';
 import { getSupabaseAdminClient } from '@/storage/database/supabase-client';
 import {
-  IMAGE_ROOT,
   SynologyError,
   folderExistsAt,
   isImageFile,
@@ -36,17 +35,13 @@ export async function GET(request: Request) {
 
     const dirExists = await folderExistsAt(targetDir);
 
-    const [files, userDirEntries, rootEntries] = await Promise.all([
+    const [files, userDirEntries] = await Promise.all([
       dirExists ? listFolder(targetDir) : Promise.resolve([]),
       listFolder(userDir),
-      listFolder(IMAGE_ROOT),
     ]);
 
+    // 分类只取当前用户根目录下的子目录，不展示他人/根目录的分类
     const categories = userDirEntries.filter((entry) => entry.isdir).map((entry) => entry.name);
-    const suggestedCategories = rootEntries
-      .filter((entry) => entry.isdir)
-      .map((entry) => entry.name)
-      .filter((name) => !categories.includes(name));
 
     // 本地映射表：标注哪些文件由当前用户通过系统上传
     const client = getSupabaseAdminClient();
@@ -81,7 +76,6 @@ export async function GET(request: Request) {
       category,
       dirExists,
       categories,
-      suggestedCategories,
       files: list,
       total: list.length,
     });
