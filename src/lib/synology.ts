@@ -164,16 +164,28 @@ async function login(): Promise<string> {
   if (state.pending) return state.pending;
 
   state.pending = (async () => {
-    // 必须用 v3 + session=FileStation：该 NAS 上 v6/v7 换来的 SID 调 FileStation 接口会返回 401
+    // 关键：必须用 v3 + session=FileStation 登录。该 NAS 上 v6/v7 也能登录成功并返回 SID，
+    // 但那个 SID 调 SYNO.FileStation.* 一律 401（会话类型不匹配），所以 v3 优先并做可用性探测。
     let sid: string | null = null;
-    for (const version of ['3']) {
+    for (const version of ['3', '7']) {
       try {
-        sid = await loginAttempt(version);
+        const candidate = await loginAttempt(version);
+        if (!candidate) continue;
+        // 拿到 SID 后立即探测一次 FileStation 是否可用，不可用则换下一个版本
+        try {
+          await callApi('SYNO.FileStation.List', '2', 'list', { folder_path: IMAGE_ROOT }, candidate);
+          sid = candidate;
+          console.log('[synology] 登录成功', { version });
+          break;
+        } catch (probeErr) {
+          console.error('[synology] SID 不可用，尝试其它登录版本', {
+            version,
+            message: probeErr instanceof Error ? probeErr.message : String(probeErr),
+          });
+        }
       } catch (err) {
         console.error('[synology] 登录异常', err);
-        sid = null;
       }
-      if (sid) break;
     }
     if (!sid) {
       throw new SynologyError('群晖登录失败，请检查 NAS 账号密码或网络连通性');
@@ -222,8 +234,8 @@ async function callApi<T>(
   const json = await readJson<T>(res);
   if (!json.success) {
     const code = json.error?.code ?? -1;
-    // 119 = SID 不存在/已过期；106/107 = 会话超时/重复登录；401 = SID 无该接口权限（换错版本登录）
-    const relogin = code === 119 || code === 106 || code === 107 || code === 401;
+    // 119 = SID 不存在/已过期；106/107 = 会话超时/重复登录
+    const relogin = code === 119 || code === 106 || code === 107;
     throw new SynologyError(`群晖接口 ${api}.${method} 调用失败（错误码 ${code}）`, relogin);
   }
   return json.data as T;
@@ -335,28 +347,34 @@ export async function listFolder(folderPath: string): Promise<SynoEntry[]> {
   }
 }
 
-/** 确保目录存在（逐级创建，已存在则跳过） */
+/** 确保目录存在（逐级创建，已存在则跳过）
+ *  注意：子账号对 DSM 根目录 `/` 没有列表权限（会返回 401），
+ *  所以从 IMAGE_ROOT 开始逐级处理，绝不去列 `/`。
+ */
 export async function ensureFolder(folderPath: string): Promise<void> {
-  const segments = folderPath.split('/').filter(Boolean);
-  let current = '';
+  const rel = folderPath.startsWith(IMAGE_ROOT) ? folderPath.slice(IMAGE_ROOT.length) : folderPath;
+  const segments = rel.split('/').filter(Boolean);
+  let current = IMAGE_ROOT;
   for (const segment of segments) {
-    const parent = current || '/';
-    current = `${current}/${segment}`;
-    const exists = await folderExists(parent, segment);
-    if (exists) continue;
+    const exists = await folderExists(current, segment);
+    if (exists) {
+      current = `${current}/${segment}`;
+      continue;
+    }
     try {
       await withSid((sid) =>
         callApi('SYNO.FileStation.CreateFolder', '2', 'create', {
-          folder_path: parent,
+          folder_path: current,
           name: JSON.stringify([segment]),
           force_parent: 'true',
         }, sid),
       );
     } catch (err) {
       // 并发创建时可能已被其他请求创建，二次确认
-      const nowExists = await folderExists(parent, segment);
+      const nowExists = await folderExists(current, segment);
       if (!nowExists) throw err;
     }
+    current = `${current}/${segment}`;
   }
 }
 

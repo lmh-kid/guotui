@@ -40,7 +40,7 @@ export async function GET(request: Request) {
       listFolder(userDir),
     ]);
 
-    // 分类只取当前用户根目录下的子目录，不展示他人/根目录的分类
+    // 分类只取「当前用户根目录下」的子目录，不展示根目录（28-九因科技）下别人的分类
     const categories = userDirEntries.filter((entry) => entry.isdir).map((entry) => entry.name);
 
     // 本地映射表：标注哪些文件由当前用户通过系统上传

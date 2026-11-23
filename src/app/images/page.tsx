@@ -131,9 +131,7 @@ export default function ImagesPage() {
     }
   }, [category, load]);
 
-  const categoryOptions = useMemo(() => {
-    return Array.from(new Set(data?.categories ?? []));
-  }, [data]);
+  const categoryOptions = useMemo(() => data?.categories ?? [], [data]);
 
   const queueRef = useRef<UploadTask[]>([]);
   const overwriteRef = useRef(false);
