@@ -137,3 +137,20 @@ export const fangguoTransactions = pgTable("fangguo_transactions", {
 	index("fangguo_transactions_user_settle_idx").using("btree", table.userId.asc().nullsLast().op("text_ops"), table.settleDate.asc().nullsLast().op("date_ops")),
 	index("fangguo_transactions_settled_date_idx").using("btree", table.settled.asc().nullsLast().op("bool_ops"), table.settleDate.asc().nullsLast().op("date_ops")),
 ]);
+
+export const userImages = pgTable("user_images", {
+	id: uuid().primaryKey().default(gen_random_uuid()).notNull(),
+	userId: uuid("user_id").notNull(),
+	account: varchar({ length: 64 }),
+	fileName: varchar("file_name", { length: 255 }).notNull(),
+	category: varchar({ length: 64 }).default('').notNull(),
+	remoteDir: varchar("remote_dir", { length: 512 }).notNull(),
+	remotePath: varchar("remote_path", { length: 768 }).notNull(),
+	size: numeric("size", { precision: 20, scale: 0 }).default('0').notNull(),
+	mime: varchar({ length: 128 }),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("user_images_user_created_idx").using("btree", table.userId.asc().nullsLast().op("uuid_ops"), table.createdAt.desc().nullsFirst()),
+	unique("user_images_remote_path_key").on(table.remotePath),
+]);

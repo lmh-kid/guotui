@@ -15,6 +15,7 @@ import {
   ChevronDown,
   Loader2,
   Shield,
+  Images,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -40,6 +41,7 @@ interface BalanceData {
 
 const menuItems = [
   { href: '/', label: '订单管理', icon: Package },
+  { href: '/images', label: '图片管理', icon: Images },
   { href: '/wallet', label: '我的钱包', icon: Wallet },
 ];
 
