@@ -12,7 +12,9 @@ import { PUSH_FEE } from '@/lib/billing';
  * 布局对齐方果后台资金明细：一个订单号一行，费用分列展示
  * - 材料费：预扣即扣款——按订单取「实扣（预扣转实扣）总额 vs 预扣总额」绝对值较大者
  *   （未发货计预扣冻结额、已发货计实扣，两阶段同一笔钱不双计），退费统一冲抵进材料费
- * - 运费：发货实扣，退费冲抵
+ * - 运费：发货实扣，退费冲抵；按**发货账期**（运费流水 settle_date）归属——运费在打包发货时
+ *   才产生，跨账期时单独成一行（标记「运费」），材料费与服务费仍归推送日，因此每天的
+ *   明细合计 = 该账期日结扣款金额（可与「每日扣款记录」逐日对齐）
  * - 手动扣费：每笔订单 ¥0.50 推单服务费，按推送日归属账期（昨日推送今日发货的单记昨日，
  *   含方果后台直推；推送日按「扣费·订单推送」预扣流水最早 settle_date 判定），
  *   展示层合成不入库（实际扣款在日结统一结算）
@@ -35,6 +37,7 @@ interface OrderRow {
   material_refund: number; // 材料退回（信息展示）
   freight_refund: number; // 运费退回（信息展示）
   total: number; // 合计 = 材料费 + 运费 + 手动扣费
+  note?: string; // 行标记（跨账期运费行显示「运费」）
 }
 
 // 时间统一转为「上海本地时间」字符串 YYYY-MM-DD HH:mm:ss（流水为 UTC ISO、
@@ -81,7 +84,7 @@ export async function GET(req: NextRequest) {
     const { data: lines, error: linesErr } = await supabase
       .from('fangguo_transactions')
       .select(
-        'id, tid, kind, fee_type, fee_name_type, business_node, processed_amount, store_name, transaction_time'
+        'id, tid, kind, fee_type, fee_name_type, business_node, processed_amount, store_name, settle_date, transaction_time'
       )
       .eq('user_id', user.id)
       .gte('settle_date', since)
@@ -95,29 +98,41 @@ export async function GET(req: NextRequest) {
       chargeMat: number; // 实扣材料费（预扣转实扣）
       preholdMat: number; // 预扣材料费（订单推送冻结，未发货时回退展示）
       refundMat: number; // 材料退回
-      chargeFrt: number; // 实扣运费
-      refundFrt: number; // 运费退回
+    }
+    // 运费单独按「订单 + 发生账期」聚合：运费是打包发货时才产生，按发生日归属
+    // 才能与方果账期账单（日结）逐日对上；材料与服务费仍归推送日
+    interface FrtAcc {
+      tid: string;
+      date: string; // 运费发生账期（流水 settle_date，上海自然日）
+      time: string; // 运费流水时间（上海本地时间）
+      charge: number;
+      refund: number;
     }
     const accMap = new Map<string, Acc>();
+    const frtMap = new Map<string, FrtAcc>();
     const noOrderRows: OrderRow[] = []; // 无订单号流水（充值等）
 
     const getAcc = (key: string, time: string, store: string | null): Acc => {
       let a = accMap.get(key);
       if (!a) {
-        a = {
-          time,
-          store,
-          chargeMat: 0,
-          preholdMat: 0,
-          refundMat: 0,
-          chargeFrt: 0,
-          refundFrt: 0,
-        };
+        a = { time, store, chargeMat: 0, preholdMat: 0, refundMat: 0 };
         accMap.set(key, a);
       }
       if (time > a.time) a.time = time; // 计费时间取最近一笔
       if (store && !a.store) a.store = store;
       return a;
+    };
+
+    const addFrt = (tid: string, date: string, time: string, chargeAmt: number, refundAmt: number) => {
+      const key = `${tid}|${date}`;
+      let f = frtMap.get(key);
+      if (!f) {
+        f = { tid, date, time, charge: 0, refund: 0 };
+        frtMap.set(key, f);
+      }
+      f.charge += chargeAmt;
+      f.refund += refundAmt;
+      if (time && time > f.time) f.time = time;
     };
 
     for (const l of lines ?? []) {
@@ -152,13 +167,14 @@ export async function GET(req: NextRequest) {
       }
 
       const acc = getAcc(tid, t, store);
+      const settleDate = String(l.settle_date ?? '').slice(0, 10);
 
       if (kind === 'charge') {
         if (name.includes('材料')) acc.chargeMat += abs;
-        else acc.chargeFrt += abs;
+        else addFrt(tid, settleDate, t, abs, 0);
       } else if (kind === 'refund') {
         if (name.includes('材料')) acc.refundMat += abs;
-        else acc.refundFrt += abs;
+        else addFrt(tid, settleDate, t, 0, abs);
       } else if (kind === 'prehold') {
         acc.preholdMat += abs; // 推送冻结，未发货时作为材料费展示
       }
@@ -196,6 +212,7 @@ export async function GET(req: NextRequest) {
     //    每笔订单加 ¥0.50 手动扣费（仅展示，按推送日归属账期）；合计 = 材料费 + 运费 + 手动扣费
     const round2 = (x: number) => Math.round(x * 100) / 100;
     const list: OrderRow[] = [];
+    const usedFrtKeys = new Set<string>();
     for (const [tid, a] of accMap) {
       // 行归属账期 = 推送日（最早预扣 settle_date）；推送日早于结算起始日
       // （不追账）或预扣流水缺失时回退到本行扣费日
@@ -207,6 +224,10 @@ export async function GET(req: NextRequest) {
       // 服务费只在推送日账期收（不跨日补收；推送日早于起始日的不追账）；
       // 预扣流水缺失（同步窗口外）时归本行扣费日收
       const manual = usePushDay || !info ? PUSH_FEE : 0;
+      // 运费按发生账期归属：与本行同一天账期的运费并入本行，其余账期单独成行
+      const sameDayFrtKey = `${tid}|${bookingDate}`;
+      const sameDayFrt = frtMap.get(sameDayFrtKey);
+      if (sameDayFrt) usedFrtKeys.add(sameDayFrtKey);
       const row: OrderRow = {
         order_no: tid,
         // 计费时间展示推单时刻（与方果后台一致），非发货转实扣时刻
@@ -215,14 +236,36 @@ export async function GET(req: NextRequest) {
         recharge: 0,
         // 预扣与实扣是同一笔钱的两个阶段：取绝对值较大者（未发货计预扣、已发货计实扣）
         material: round2(Math.max(a.chargeMat, a.preholdMat) - a.refundMat),
-        freight: round2(a.chargeFrt - a.refundFrt),
+        freight: sameDayFrt ? round2(sameDayFrt.charge - sameDayFrt.refund) : 0,
         manual,
         material_refund: round2(a.refundMat),
-        freight_refund: round2(a.refundFrt),
+        freight_refund: sameDayFrt ? round2(sameDayFrt.refund) : 0,
         total: 0,
       };
       row.total = round2(row.material + row.freight + row.manual);
       list.push(row);
+    }
+
+    // 跨账期运费：推送日与发货日不在同一账期时，运费按发货账期单独成行
+    // （材料费与服务费仍在推送日，不重复计；这样每天的明细合计 = 该账期日结金额）
+    for (const [key, f] of frtMap) {
+      if (usedFrtKeys.has(key)) continue;
+      if (!f.date || f.date < since) continue;
+      const net = round2(f.charge - f.refund);
+      if (net === 0 && round2(f.refund) === 0) continue;
+      list.push({
+        order_no: f.tid,
+        time: f.time,
+        store_name: accMap.get(f.tid)?.store ?? null,
+        recharge: 0,
+        material: 0,
+        freight: net,
+        manual: 0,
+        material_refund: 0,
+        freight_refund: round2(f.refund),
+        total: net,
+        note: '运费',
+      });
     }
     list.push(...noOrderRows);
     list.sort((a, b) => (a.time < b.time ? 1 : a.time > b.time ? -1 : 0));

@@ -11,7 +11,9 @@ import { toast } from 'sonner';
  * 资金明细（按订单号聚合，布局对齐方果后台）
  * 一个订单一行：材料费 / 运费 / 手动扣费(推单服务费 ¥0.50/单) / 材料退回 / 运费退回
  * 材料费：预扣与实扣是同一笔钱的两个阶段，取绝对值较大者（未发货计预扣、已发货计实扣），退费冲抵
+ * 运费：按发货账期归属（打包发货时才产生），跨账期时单独成一行（标记「运费」）
  * 合计 = 材料费 + 运费 + 手动扣费；默认展示当天，可切换近 3/7/30 天
+ * 口径效果：每天的明细合计 = 该账期日结扣款金额（材料 + 运费 + 服务费），可直接对账
  */
 
 interface OrderRow {
@@ -25,6 +27,7 @@ interface OrderRow {
   material_refund: number;
   freight_refund: number;
   total: number;
+  note?: string;
 }
 
 interface Summary {
@@ -172,7 +175,14 @@ export default function FangguoLinesTab() {
                   className="[&>td]:border-r [&>td]:border-gray-100 [&>td]:px-3 [&>td]:py-2 last:[&>td]:border-r-0 hover:bg-gray-50"
                 >
                   <td className="whitespace-nowrap text-xs text-gray-600">{fmtTime(r.time)}</td>
-                  <td className="font-mono text-xs text-gray-800">{r.order_no || '—'}</td>
+                  <td className="font-mono text-xs text-gray-800">
+                    {r.order_no || '—'}
+                    {r.note ? (
+                      <span className="ml-1 rounded bg-gray-100 px-1 py-0.5 text-[10px] font-normal text-gray-500">
+                        {r.note}
+                      </span>
+                    ) : null}
+                  </td>
                   <td className="max-w-32 truncate text-xs text-gray-600">{r.store_name || '-'}</td>
                   <Cell v={r.recharge} sign />
                   <Cell v={r.material} />
@@ -213,6 +223,10 @@ export default function FangguoLinesTab() {
         <p className="mt-1 text-xs text-gray-400">
           「材料退回」为取消/改价重推时原预扣的全额退回流水（如工厂改价 20→16.5：原扣 20 退回、按 16.5 重扣），
           「材料费」列已是扣除退回后的净额（16.50），两者不叠加
+        </p>
+        <p className="mt-1 text-xs text-gray-400">
+          运费按发货账期归属：昨日推单、今日发货的单，材料费与服务费记昨日，运费记今日（单独一行，标记「运费」），
+          因此每天明细合计 = 该日扣款金额，可与「每日扣款记录」逐日对齐
         </p>
       </CardContent>
     </Card>
