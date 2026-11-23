@@ -12,13 +12,14 @@ export const dynamic = 'force-dynamic';
  * 仅允许访问当前用户自己目录下的文件。
  */
 export async function GET(request: Request) {
-  const token = request.headers.get('x-session');
+  const { searchParams } = new URL(request.url);
+  // <img> 标签无法携带自定义 header，允许用 token 查询参数鉴权（与 x-session 等价）
+  const token = request.headers.get('x-session') || searchParams.get('token');
   const { user, error } = await getCurrentUser(token);
   if (!user) {
     return NextResponse.json({ error: error || '请先登录' }, { status: 401 });
   }
 
-  const { searchParams } = new URL(request.url);
   const remotePath = searchParams.get('path') || '';
   const wantThumb = searchParams.get('thumb') !== '0';
 

@@ -612,7 +612,7 @@ export async function openImage(remotePath: string, wantThumb: boolean): Promise
         version: '2',
         method: 'get',
         path: remotePath,
-        size: 'medium',
+        size: 'small',
       });
       if (thumb) return thumb;
     }

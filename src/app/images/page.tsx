@@ -94,6 +94,7 @@ export default function ImagesPage() {
   const [duplicatePrompt, setDuplicatePrompt] = useState<{ names: string[]; files: File[] } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [sessionToken, setSessionToken] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(
@@ -114,6 +115,10 @@ export default function ImagesPage() {
   useEffect(() => {
     load(category);
   }, [category, load]);
+
+  useEffect(() => {
+    setSessionToken(localStorage.getItem(SESSION_TOKEN_KEY) || '');
+  }, []);
 
   const createDir = useCallback(async () => {
     setCreating(true);
@@ -319,7 +324,9 @@ export default function ImagesPage() {
   );
 
   const previewUrl = (file: NasFile, thumb: boolean) =>
-    `/api/images/preview?path=${encodeURIComponent(file.path)}&thumb=${thumb ? '1' : '0'}`;
+    `/api/images/preview?path=${encodeURIComponent(file.path)}&thumb=${thumb ? '1' : '0'}${
+      sessionToken ? `&token=${encodeURIComponent(sessionToken)}` : ''
+    }`;
 
   const activeTasks = tasks.filter((task) => task.status === 'uploading' || task.status === 'pending');
   const finishedTasks = tasks.filter((task) => task.status !== 'uploading' && task.status !== 'pending');
