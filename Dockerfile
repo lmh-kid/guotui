@@ -2,7 +2,7 @@
 # guotui — Next.js（可选自定义 server，如 tsup 打包的 dist/server.js）
 # 参数占位符由 docker-deploy-aliyun Skill 渲染，不要手动改占位符
 
-FROM node:22-bookworm-slim AS builder
+FROM docker.m.daocloud.io/library/node:22-bookworm-slim AS builder
 ENV NEXT_TELEMETRY_DISABLED=1 \
     CI=1 \
     NODE_OPTIONS=--max-old-space-size=4096
@@ -13,7 +13,7 @@ RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm next build --webpack && pnpm tsup src/server.ts --format cjs --platform node --target node20 --outDir dist --no-splitting --no-minify
 
-FROM node:22-bookworm-slim AS runner
+FROM docker.m.daocloud.io/library/node:22-bookworm-slim AS runner
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     TZ=Asia/Shanghai \
