@@ -163,5 +163,6 @@ Desktop.ini
 # Misc
 .coze-logs
 .codegraph/
-/assets/
+/assets/*
+!/assets/deploy.ps1
 *.skill
