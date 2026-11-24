@@ -130,8 +130,9 @@ python3 scripts/gen_deploy.py \
 
 ## 常见坑（务必提醒用户）
 
-1. **跨平台构建**：不要「Windows 本地 build 再把 `.next`/`node_modules` 传上去」，原生依赖（sharp 等）会坏。一律在构建机 `git pull` 源码后 `docker build`。
-2. **pnpm 符号链接**：pnpm 的 `node_modules` 是符号链接结构，复制时必须整目录复制，不能只复制包目录。
-3. **环境变量缺失**：运行时缺 DB/密钥配置表现为「容器启动成功但接口 500」，健康检查要选一个依赖数据库的接口。
-4. **多副本重复执行定时任务**：进程内 cron 只能单副本，扩容前必须先剥离成独立任务进程。
-5. **日志无限增长**：不加 `max-size` 时 `json-file` 会吃满磁盘，这是最常见的线上事故。
+1. **Docker Hub 拉不动**：国内构建机直连 `node:22` / `nginx` 常超时。基础镜像走代理域名，如 `docker.m.daocloud.io/library/node:22-bookworm-slim`、`docker.m.daocloud.io/library/nginx:1.27-alpine`（模板默认值已这么写，可用 `--node-image` / `--nginx-image` 覆盖）。
+2. **跨平台构建**：不要「Windows 本地 build 再把 `.next`/`node_modules` 传上去」，原生依赖（sharp 等）会坏。一律在构建机 `git pull` 源码后 `docker build`。
+3. **pnpm 符号链接**：pnpm 的 `node_modules` 是符号链接结构，复制时必须整目录复制，不能只复制包目录。
+4. **环境变量缺失**：运行时缺 DB/密钥配置表现为「容器启动成功但接口 500」，健康检查要选一个依赖数据库的接口。
+5. **多副本重复执行定时任务**：进程内 cron 只能单副本，扩容前必须先剥离成独立任务进程。
+6. **日志无限增长**：不加 `max-size` 时 `json-file` 会吃满磁盘，这是最常见的线上事故。

@@ -26,9 +26,10 @@ TEMPLATE_DIR = pathlib.Path(__file__).resolve().parent.parent / "assets"
 
 DEFAULTS = {
     "APP_NAME": "app",
-    "NODE_VERSION": "22",
+    # 国内构建机通常直连不了 Docker Hub，默认走 DaoCloud 代理域名
+    "NODE_IMAGE": "docker.m.daocloud.io/library/node:22-bookworm-slim",
+    "NGINX_IMAGE": "docker.m.daocloud.io/library/nginx:1.27-alpine",
     "PNPM_VERSION": "9.0.0",
-    "NGINX_VERSION": "1.27",
     "TZ": "Asia/Shanghai",
     "CONTAINER_PORT": "5000",
     "HOST_PORT": "5000",

@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # __APP_NAME__ — 纯静态站（vite/webpack 产物 dist/），无需 Node 运行时
 
-FROM node:__NODE_VERSION__-bookworm-slim AS builder
+FROM __NODE_IMAGE__ AS builder
 ENV CI=1
 WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@__PNPM_VERSION__ --activate
@@ -10,7 +10,7 @@ RUN pnpm install --frozen-lockfile
 COPY . .
 RUN __BUILD_CMD__
 
-FROM nginx:__NGINX_VERSION__-alpine AS runner
+FROM __NGINX_IMAGE__ AS runner
 ENV TZ=__TZ__
 COPY __STATIC_DIR__ /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf

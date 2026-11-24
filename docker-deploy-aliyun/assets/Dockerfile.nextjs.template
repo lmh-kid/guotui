@@ -2,7 +2,7 @@
 # __APP_NAME__ — Next.js（可选自定义 server，如 tsup 打包的 dist/server.js）
 # 参数占位符由 docker-deploy-aliyun Skill 渲染，不要手动改占位符
 
-FROM node:__NODE_VERSION__-bookworm-slim AS builder
+FROM __NODE_IMAGE__ AS builder
 ENV NEXT_TELEMETRY_DISABLED=1 \
     CI=1 \
     NODE_OPTIONS=--max-old-space-size=4096
@@ -13,7 +13,7 @@ RUN pnpm install --frozen-lockfile
 COPY . .
 RUN __BUILD_CMD__
 
-FROM node:__NODE_VERSION__-bookworm-slim AS runner
+FROM __NODE_IMAGE__ AS runner
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     TZ=__TZ__ \
